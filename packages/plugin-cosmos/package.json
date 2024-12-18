@@ -1,0 +1,30 @@
+{
+  "name": "@ai16z/plugin-cosmos",
+  "version": "0.1.0-alpha",
+  "main": "dist/index.js",
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@ai16z/eliza": "workspace:*",
+    "@ai16z/plugin-trustdb": "workspace:*",
+    "@cosmjs/amino": "^0.31.3",
+    "@cosmjs/cosmwasm-stargate": "0.32.2",
+    "@cosmjs/proto-signing": "^0.32.4",
+    "@cosmjs/stargate": "^0.32.4",
+    "@mysten/sui": "^1.16.0",
+    "bignumber": "1.1.0",
+    "bignumber.js": "9.1.2",
+    "node-cache": "5.1.2",
+    "tsup": "8.3.5",
+    "vitest": "2.1.4"
+  },
+  "scripts": {
+    "build": "tsup --format esm --dts",
+    "lint": "eslint . --fix",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "form-data": "4.0.1",
+    "whatwg-url": "7.1.0"
+  }
+}
