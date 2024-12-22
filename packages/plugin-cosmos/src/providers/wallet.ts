@@ -6,11 +6,10 @@ import {
     State,
 } from "@ai16z/eliza";
 import { DirectSecp256k1HdWallet, coin } from "@cosmjs/proto-signing";
-import { QueryClient, setupBankExtension, createProtobufRpcClient } from "@cosmjs/stargate";
 import BigNumber from "bignumber.js";
 import NodeCache from "node-cache";
 import * as path from "path";
-import { Comet38Client } from "@cosmjs/tendermint-rpc";
+import { osmosis } from 'osmojs';
 
 const PROVIDER_CONFIG = {
     MAX_RETRIES: 3,
@@ -124,16 +123,14 @@ export class WalletProvider {
                 throw error;
             });
 
-            // Initialize Tendermint Client and Query Client
-            const tendermintClient = await Comet38Client.connect(this.rpcUrl);
-            // const queryClient = QueryClient.withExtensions(
-            //     createProtobufRpcClient(tendermintClient),
-            //     setupBankExtension
-            // );
+            const { createRPCQueryClient } = osmosis.ClientFactory;
+            const client = await createRPCQueryClient({ rpcEndpoint: this.rpcUrl });
 
-            const balances = coin("100000000000", "uatom"); //await queryClient.bank.balance(this.address, "uatom");
+            // now you can query the cosmos modules
+            const balances = await client.cosmos.bank.v1beta1
+                .allBalances({ address: this.address });
 
-            const atomAmount = new BigNumber(balances.amount).dividedBy(1_000_000); // Convert from uatom to ATOM
+            const atomAmount = new BigNumber(balances[0].amount).dividedBy(1_000_000); // Convert from uatom to ATOM
             const totalUsd = atomAmount.times(prices.atom.usd);
 
 
