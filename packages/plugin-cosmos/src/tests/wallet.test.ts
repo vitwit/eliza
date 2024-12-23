@@ -25,22 +25,22 @@ vi.mock("path", async () => {
 });
 
 // For demonstration, we mock the entire stargate client so no real network calls
-vi.mock("@cosmjs/stargate", () => {
-  return {
-    // Partial mock with the classes we need
-    SigningStargateClient: {
-      connectWithSigner: vi.fn().mockResolvedValue({
-        getAllBalances: vi.fn().mockResolvedValue([
-          { denom: "uosmo", amount: "1230000" }, // 1.23 OSMO
-        ]),
-        // Example account with minimal data
-        getSignerAccounts: vi.fn().mockResolvedValue([
-          { address: "osmo1mock..." },
-        ]),
-      }),
-    },
-  };
-});
+// vi.mock("@cosmjs/stargate", () => {
+//   return {
+//     // Partial mock with the classes we need
+//     SigningStargateClient: {
+//       connectWithSigner: vi.fn().mockResolvedValue({
+//         getAllBalances: vi.fn().mockResolvedValue([
+//           { denom: "uosmo", amount: "1230000" }, // 1.23 OSMO
+//         ]),
+//         // Example account with minimal data
+//         getSignerAccounts: vi.fn().mockResolvedValue([
+//           { address: "osmo1mock..." },
+//         ]),
+//       }),
+//     },
+//   };
+// });
 
 // (Optional) If you're testing price fetch from Coingecko, you can also mock fetch
 vi.mock(globalThis.fetch ? 'node-fetch' : 'cross-fetch', () => ({
@@ -80,13 +80,13 @@ describe("Cosmos WalletProvider (getFormattedPortfolio)", () => {
         case "COSMOS_CHAIN_NAME":
           return "osmosis";
         case "COSMOS_RPC_URL":
-          return "https://custom.env.rpc/";
+          return "https://rpc.osmosis.zone/";
         case "COSMOS_CHAIN_DENOM":
           return "uenvdenom";
         case "COSMOS_CHAIN_DECIMALS":
           return "4";
         case "COSMOS_BECH32_PREFIX":
-          return "osmo1mock";
+          return "osmo";
         default:
           return undefined;
       }
@@ -97,7 +97,7 @@ describe("Cosmos WalletProvider (getFormattedPortfolio)", () => {
 
     // Should mention chain and account address
     expect(result).toContain("Chain: osmosis");
-    expect(result).toContain("Account Address: osmo1mock");
+    expect(result).toContain("Account Address: osmo1");
 
     // Should have "Token Balances:"
     expect(result).toContain("Token Balances:");

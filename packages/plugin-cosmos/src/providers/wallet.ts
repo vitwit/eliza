@@ -1,338 +1,350 @@
+import { chains } from "chain-registry";
+import NodeCache from "node-cache";
+import BigNumber from "bignumber.js";
+import { SigningStargateClient, StdFee } from "@cosmjs/stargate";
+import { getOfflineSignerProto as getOfflineSigner } from "cosmjs-utils";
 import {
-    IAgentRuntime,
-    Memory,
-    Provider,
-    State
-  } from "@ai16z/eliza";
-  import { chains } from "chain-registry";
-  import BigNumber from "bignumber.js";
-  import NodeCache from "node-cache";
-  import { getOfflineSignerProto as getOfflineSigner } from "cosmjs-utils";
-  import { SigningStargateClient } from "@cosmjs/stargate";
+  IAgentRuntime,
+  Memory,
+  Provider,
+  State
+} from "@ai16z/eliza";
+
+/**
+ * Minimal CosmosChainInfo shape for demonstration.
+ * Extend as needed to match your usage.
+ */
+export interface CosmosChainInfo {
+  chain_name: string;
+  denom?: string;
+  decimals?: number;
+  coingecko_id: string;
+  bech32_prefix: string;
+  apis?: {
+    rpc?: Array<{ address: string }>;
+  };
+  fees?: {
+    fee_tokens?: Array<{
+      denom: string;
+      average_gas_price?: number;
+    }>;
+  };
+}
+
+/**
+ * Basic token interface for the portfolio
+ */
+export interface CosmosToken {
+  name: string;
+  symbol: string;
+  decimals: number;
+  balance: string;
+  uiAmount: string;
+  priceUsd: string;
+  valueUsd: string;
+}
+
+/**
+ * Portfolio interface showing total USD plus an array of tokens
+ */
+interface WalletPortfolio {
+  totalUsd: string;
+  tokens: Array<CosmosToken>;
+}
+
+/**
+ * Shared utility to connect to the Cosmos chain using a mnemonic and chainInfo.
+ * Returns { stargateClient, signerAddress } for further usage (transfers, queries, etc.).
+ */
+export async function connectWallet(
+  mnemonic: string,
+  chainInfo: CosmosChainInfo
+): Promise<{
+  stargateClient: SigningStargateClient;
+  signerAddress: string;
+}> {
+  if (!mnemonic) {
+    throw new Error("Cosmos wallet mnemonic not provided");
+  }
+
+  // 1) Grab the first RPC endpoint
+  const rpcUrl = chainInfo.apis?.rpc?.[0]?.address;
+  if (!rpcUrl) {
+    throw new Error("No RPC endpoint specified in chainInfo");
+  }
+
+  // 2) Create offline signer
+  const signer = await getOfflineSigner({
+    mnemonic,
+    chain: chainInfo,
+  });
+
+  // 3) Connect Stargate client
+  const stargateClient = await SigningStargateClient.connectWithSigner(
+    rpcUrl,
+    signer
+  );
+
+  // 4) Get the signer address
+  const [account] = await signer.getAccounts();
+  const signerAddress = account.address;
+
+  return { stargateClient, signerAddress };
+}
+
+/**
+ * The main WalletProvider class
+ * - Connects to chain (via chain-registry or environment overrides)
+ * - Stores the signer address
+ * - Exposes getAddress() for external usage
+ * - Provides getFormattedPortfolio(...) to retrieve portfolio info
+ */
+export class WalletProvider implements Provider {
+  private cache: NodeCache;
+  private stargateClient: SigningStargateClient | null = null;
+  private signerAddress: string | null = null;
+
+  constructor(
+    private mnemonic: string,
+    private chainInfo: CosmosChainInfo
+  ) {
+    console.log("WalletProvider instantiated for chain:", chainInfo.chain_name);
+    this.cache = new NodeCache({ stdTTL: 300 }); // 5-min TTL
+  }
 
   /**
-   * Minimal CosmosChainInfo shape for demonstration.
-   * Extend as needed to match your usage.
+   * Eliza's Provider interface method: fetch some data (portfolio, etc.)
    */
-  interface CosmosChainInfo {
-    chain_name: string;
-    denom?: string;
-    decimals?: number;
-    coingecko_id: string;
-    bech32_prefix: string;
-    apis?: {
-      rpc?: Array<{ address: string }>;
+  async get(
+    runtime: IAgentRuntime,
+    _message: Memory,
+    _state?: State
+  ): Promise<string | null> {
+    try {
+      return await this.getFormattedPortfolio(runtime);
+    } catch (error) {
+      console.error("Error in wallet provider get():", error);
+      return null;
+    }
+  }
+
+  /**
+   * Public method to establish the connection (once).
+   */
+  public async connectWallet(runtime: IAgentRuntime): Promise<void> {
+    if (this.stargateClient && this.signerAddress) return;
+
+    const { stargateClient, signerAddress } = await connectWallet(
+      this.mnemonic,
+      this.chainInfo
+    );
+    this.stargateClient = stargateClient;
+    this.signerAddress = signerAddress;
+  }
+
+  /**
+   * Public method to fetch the current signer address
+   */
+  public getAddress(): string | null {
+    return this.signerAddress;
+  }
+
+  /**
+   * Example: fetch a single-token portfolio, with price from Coingecko
+   */
+  async fetchPortfolioValue(runtime: IAgentRuntime): Promise<WalletPortfolio> {
+    // In-memory caching for demonstration
+    const cacheKey = `portfolio-${this.chainInfo.chain_name}`;
+    const cachedValue = this.cache.get<WalletPortfolio>(cacheKey);
+    if (cachedValue) {
+      console.log("Cache hit for fetchPortfolioValue");
+      return cachedValue;
+    }
+
+    // Make sure we're connected
+    await this.connectWallet(runtime);
+    if (!this.stargateClient || !this.signerAddress) {
+      throw new Error("Unable to fetch balances - not connected");
+    }
+
+    // Denom & decimals from chainInfo
+    const denom = this.chainInfo.denom;
+    const decimals = this.chainInfo.decimals ?? 6;
+
+    // Get balance
+    const balances = await this.stargateClient.getAllBalances(this.signerAddress);
+    const baseTokenBalance = balances.find((b) => b.denom === denom);
+    const rawBalance = baseTokenBalance?.amount ?? "0";
+
+    // Price from Coingecko
+    const cgID = this.chainInfo.coingecko_id;
+    const tokenPriceUsd = await this.fetchTokenPrice(cgID);
+
+    // Convert minimal denom -> "1" denom
+    const convertedBalance = new BigNumber(rawBalance).shiftedBy(-decimals);
+    const valueUsd = convertedBalance.multipliedBy(tokenPriceUsd).toFixed();
+
+    const portfolio: WalletPortfolio = {
+      totalUsd: valueUsd,
+      tokens: [
+        {
+          name: this.chainInfo.chain_name ?? "Cosmos Chain",
+          symbol: denom?.toUpperCase() || "N/A",
+          decimals,
+          balance: rawBalance,
+          uiAmount: convertedBalance.toString(),
+          priceUsd: tokenPriceUsd.toString(),
+          valueUsd,
+        },
+      ],
     };
-    fees?: {
-      fee_tokens?: Array<{
-        denom: string;
-        average_gas_price?: number;
-      }>;
-    };
+
+    // Cache the result
+    this.cache.set(cacheKey, portfolio);
+    return portfolio;
   }
 
   /**
-   * Basic token interface for the portfolio
+   * Example price fetcher from Coingecko
    */
-  export interface CosmosToken {
-    name: string;
-    symbol: string;
-    decimals: number;
-    balance: string;
-    uiAmount: string;
-    priceUsd: string;
-    valueUsd: string;
-  }
-
-  /**
-   * Portfolio interface showing total USD plus an array of tokens
-   */
-  interface WalletPortfolio {
-    totalUsd: string;
-    tokens: Array<CosmosToken>;
-  }
-
-  export class WalletProvider implements Provider {
-    private cache: NodeCache;
-    private stargateClient: SigningStargateClient | null = null;
-    private signerAddress: string | null = null;
-
-    constructor(
-      private mnemonic: string,
-      private chainInfo: CosmosChainInfo
-    ) {
-    //   console.log("WalletProvider instantiated with chainInfo:", chainInfo);
-      this.cache = new NodeCache({ stdTTL: 300 }); // 5-min TTL
+  private async fetchTokenPrice(cgID: string): Promise<number> {
+    const cacheKey = `price-${cgID}`;
+    const cachedPrice = this.cache.get<number>(cacheKey);
+    if (cachedPrice) {
+      return cachedPrice;
     }
 
-    /**
-     * The Eliza framework calls this method to "get" data from the provider.
-     * Here we simply fetch the user's formatted portfolio.
-     */
-    async get(
-      runtime: IAgentRuntime,
-      _message: Memory,
-      _state?: State
-    ): Promise<string | null> {
-      try {
-        return await this.getFormattedPortfolio(runtime);
-      } catch (error) {
-        console.error("Error in wallet provider get:", error);
-        return null;
-      }
-    }
-
-    /**
-     * Connect once, returning a SigningStargateClient
-     */
-    public async connect(runtime: IAgentRuntime): Promise<SigningStargateClient> {
-      if (this.stargateClient) return this.stargateClient;
-      if (!this.mnemonic) {
-        throw new Error("Cosmos wallet mnemonic not provided");
-      }
-
-      // Grab the first RPC in chainInfo.apis
-      const rpcUrl = this.chainInfo.apis?.rpc?.[0]?.address;
-      if (!rpcUrl) {
-        throw new Error("No RPC endpoint specified in chainInfo");
-      }
-
-      const signer = await getOfflineSigner({
-        mnemonic: this.mnemonic,
-        chain: this.chainInfo,
-      });
-
-      const stargateClient = await SigningStargateClient.connectWithSigner(rpcUrl, signer);
-      const [account] = await signer.getAccounts();
-      this.signerAddress = account.address;
-      this.stargateClient = stargateClient;
-
-      console.log("Agent init with signer address: ", this.signerAddress)
-      return stargateClient;
-    }
-
-    /**
-     * Retrieves balance for a single token, fetches price, calculates portfolio
-     * with additional checks to handle NaN or invalid values.
-     */
-    async fetchPortfolioValue(runtime: IAgentRuntime): Promise<WalletPortfolio> {
-      const cacheKey = `portfolio-${this.chainInfo.chain_name}`;
-      const cachedValue = this.cache.get<WalletPortfolio>(cacheKey);
-      if (cachedValue) {
-        console.log("Cache hit for fetchPortfolioValue");
-        return cachedValue;
-      }
-
-      // Connect if not already
-      const client = await this.connect(runtime);
-      if (!this.signerAddress) {
-        throw new Error("Signer address not available after connect");
-      }
-
-      // 1) Safely determine denom & decimals
-      const denom = this.chainInfo.denom || "uosmo";
-
-      // parse the decimals as an integer
-      let decimals = parseInt(String(this.chainInfo.decimals), 10);
-      if (isNaN(decimals) || decimals < 1) {
-        console.warn(
-          `Invalid or missing decimals (${this.chainInfo.decimals}), defaulting to 1`
-        );
-        decimals = 1;
-      }
-
-      // 2) Fetch all balances from the chain
-      const balances = await client.getAllBalances(this.signerAddress);
-      const baseTokenBalance = balances.find((b) => b.denom === denom);
-      let rawBalance = baseTokenBalance?.amount ?? "0";
-
-      // 3) Coingecko ID from chainInfo or fallback
-      const cgID = this.chainInfo.coingecko_id || "osmosis";
-
-      let tokenPriceUsd = await this.fetchTokenPrice(runtime, cgID);
-
-      // 4) Ensure rawBalance is a valid number
-      let balanceBN = new BigNumber(rawBalance);
-      if (!balanceBN.isFinite()) {
-        console.warn(`Invalid raw balance value: ${rawBalance}, defaulting to 0.`);
-        balanceBN = new BigNumber(0);
-      }
-
-      // Also ensure tokenPriceUsd is numeric
-      if (isNaN(tokenPriceUsd) || !tokenPriceUsd) {
-        console.warn(`Invalid token price: ${tokenPriceUsd}, defaulting to 0.`);
-        tokenPriceUsd = 0;
-      }
-
-      // 5) Convert minimal denom -> "1" denom
-      const convertedBalance = balanceBN.shiftedBy(-decimals);
-      const valueUsd = convertedBalance.multipliedBy(tokenPriceUsd).toFixed();
-
-      // Construct a simple portfolio
-      const portfolio: WalletPortfolio = {
-        totalUsd: valueUsd,
-        tokens: [
-          {
-            name: this.chainInfo.chain_name ?? "Cosmos Chain",
-            symbol: denom.toUpperCase(),
-            decimals,
-            balance: balanceBN.toFixed(), // store the validated balance
-            uiAmount: convertedBalance.toString(),
-            priceUsd: String(tokenPriceUsd),
-            valueUsd,
-          },
-        ],
-      };
-
-      this.cache.set(cacheKey, portfolio);
-      return portfolio;
-    }
-
-    /**
-     * Fetch price from Coingecko (or 0 if fails)
-     */
-    private async fetchTokenPrice(runtime: IAgentRuntime, cgID: string): Promise<number> {
-      const cacheKey = `price-${cgID}`;
-      const cachedPrice = this.cache.get<number>(cacheKey);
-      if (cachedPrice !== undefined && cachedPrice) {
-        return cachedPrice;
-      }
-
-      try {
-        // For example: fetch OSMO price if cgID = "osmosis"
-        const url = `https://api.coingecko.com/api/v3/simple/price?ids=${cgID}&vs_currencies=usd`;
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`Error fetching price for ${cgID}. Status: ${response.status}`);
-        }
-        const data = await response.json();
-
-        const price = data[cgID]?.usd ?? 0;
-        this.cache.set(cacheKey, price);
-        return price;
-      } catch (error) {
-        console.error("Error fetching token price:", error);
+    try {
+      const url = `https://api.coingecko.com/api/v3/simple/price?ids=${cgID}&vs_currencies=usd`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.error(`Error fetching price for ${cgID}. Status: ${response.status}`);
         return 0;
       }
-    }
 
-    /**
-     * Format the portfolio into a text string
-     */
-    formatPortfolio(runtime: IAgentRuntime, portfolio: WalletPortfolio): string {
-      let output = ``;
-      output += `Chain: ${this.chainInfo.chain_name}\n`;
+      const data = await response.json();
+      const price = data[cgID]?.usd ?? 0;
+      this.cache.set(cacheKey, price);
 
-      if (this.signerAddress) {
-        output += `Account Address: ${this.signerAddress}\n\n`;
-      }
-
-      const totalUsd = new BigNumber(portfolio.totalUsd).toFixed(2);
-      output += `Total Value: $${totalUsd}\n\nToken Balances:\n`;
-
-      for (const token of portfolio.tokens) {
-        const valUsd = new BigNumber(token.valueUsd).toFixed(2);
-        output += `${token.name} (${token.symbol}): ${token.uiAmount} ($${valUsd})\n`;
-      }
-
-      output += `\nMarket Prices:\n`;
-      for (const token of portfolio.tokens) {
-        const tokenPriceUsd = new BigNumber(token.priceUsd).toFixed(2);
-        output += `${token.symbol}: $${tokenPriceUsd}\n`;
-      }
-
-      return output;
-    }
-
-    /**
-     * Convenience method to fetch + format
-     */
-    async getFormattedPortfolio(runtime: IAgentRuntime): Promise<string> {
-      try {
-        const portfolio = await this.fetchPortfolioValue(runtime);
-        return this.formatPortfolio(runtime, portfolio);
-      } catch (error) {
-        console.error("Error generating portfolio report:", error);
-        return "Unable to fetch wallet information. Please try again later.";
-      }
+      return price;
+    } catch (error) {
+      console.error("Error fetching token price:", error);
+      return 0;
     }
   }
 
   /**
-   * Single exported provider.
-   * If COSMOS_RPC_URL is set, we create a local chainInfo.
-   * Otherwise, we load chainInfo from chain-registry for chain_name.
+   * Format the portfolio into a text string
    */
-  const walletProvider: Provider = {
-    get: async (runtime, message, state) => {
-      try {
-        // 1) Pull settings from environment or .env
-        const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
-        if (!mnemonic) {
-          throw new Error("COSMOS_MNEMONIC not configured");
-        }
-        const coingeckoID = runtime.getSetting("COSMOS_COINGECKO_ID") || "osmosis";
-        const chainName = runtime.getSetting("COSMOS_CHAIN_NAME") || "osmosis";
+  formatPortfolio(portfolio: WalletPortfolio): string {
+    let output = `Chain: ${this.chainInfo.chain_name}\n`;
 
-        // 2) Check if user provided a custom RPC via COSMOS_RPC_URL
-        const customRpc = runtime.getSetting("COSMOS_RPC_URL");
-        if (customRpc) {
-          // Possibly read denom, decimals, and bech32_prefix from env or use defaults
-          const customDenom = runtime.getSetting("COSMOS_CHAIN_DENOM") || "uosmo";
-          // We'll parse the env decimals as integer, min 1 is enforced inside fetchPortfolioValue
-          const customDecimals = Number(runtime.getSetting("COSMOS_CHAIN_DECIMALS") || 6);
-          const bech32Prefix = runtime.getSetting("COSMOS_BECH32_PREFIX") || "osmo";
+    if (this.signerAddress) {
+      output += `Account Address: ${this.signerAddress}\n\n`;
+    }
 
-          // Example fallback average gas price
-          const averageGasPrice = 0.025;
+    const totalUsd = new BigNumber(portfolio.totalUsd).toFixed(2);
+    output += `Total Value: $${totalUsd}\n\nToken Balances:\n`;
 
-          // 2A) Construct a minimal chainInfo object from environment
-          const localChainInfo: CosmosChainInfo = {
-            chain_name: chainName,
-            bech32_prefix: bech32Prefix,
-            coingecko_id: coingeckoID,
-            apis: { rpc: [{ address: customRpc }] },
-            fees: {
-              fee_tokens: [
-                {
-                  denom: customDenom,
-                  average_gas_price: averageGasPrice
-                }
-              ]
-            },
-            denom: customDenom,
-            decimals: customDecimals
-          };
+    for (const token of portfolio.tokens) {
+      const valUsd = new BigNumber(token.valueUsd).toFixed(2);
+      output += `${token.name} (${token.symbol}): ${token.uiAmount} ($${valUsd})\n`;
+    }
 
-          const provider = new WalletProvider(mnemonic, localChainInfo);
-          return provider.getFormattedPortfolio(runtime);
-        } else {
-          // 2B) Otherwise, load chainInfo from chain-registry
-          const chainData = chains.find(c => c.chain_name === chainName);
-          if (!chainData) {
-            throw new Error(`Chain '${chainName}' not found in chain-registry`);
-          }
+    output += `\nMarket Prices:\n`;
+    for (const token of portfolio.tokens) {
+      const tokenPriceUsd = new BigNumber(token.priceUsd).toFixed(2);
+      output += `${token.symbol}: $${tokenPriceUsd}\n`;
+    }
 
-          // Optionally store denom/decimals from chainData or env
-          const chainDenom = chainData.fees?.fee_tokens?.[0]?.denom || "uosmo";
-          // We'll parse from chainData, but min 1 is enforced inside fetchPortfolioValue
-          const chainDecimals = chainData.decimals || 6;
+    return output;
+  }
 
-          chainData.denom = chainDenom;
-          chainData.decimals = chainDecimals;
+  /**
+   * Convenience method: fetch + format
+   */
+  async getFormattedPortfolio(runtime: IAgentRuntime): Promise<string> {
+    try {
+      const portfolio = await this.fetchPortfolioValue(runtime);
+      return this.formatPortfolio(portfolio);
+    } catch (error) {
+      console.error("Error generating portfolio report:", error);
+      return "Unable to fetch wallet information. Please try again later.";
+    }
+  }
+}
 
-          if (!chainData.coingecko_id) {
-            chainData.coingecko_id = coingeckoID; // fallback
-          }
-
-          const provider = new WalletProvider(mnemonic, chainData as CosmosChainInfo);
-          return provider.getFormattedPortfolio(runtime);
-        }
-      } catch (error) {
-        console.error("Error in wallet provider:", error);
-        return null;
+/**
+ * Single exported provider (default behavior for Eliza data fetch).
+ * - If COSMOS_RPC_URL is set, we build a minimal chainInfo from environment.
+ * - Otherwise, fallback to chain-registry for chain details.
+ */
+export const walletProvider: Provider = {
+  get: async (runtime, message, state) => {
+    try {
+      // 1) Ensure mnemonic
+      const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
+      if (!mnemonic) {
+        throw new Error("COSMOS_MNEMONIC not configured");
       }
-    },
-  };
 
-  export { walletProvider };
+      // 2) Prepare chainName & coingeckoID
+      const chainName = runtime.getSetting("COSMOS_CHAIN_NAME") || "osmosis";
+      const coingeckoID = runtime.getSetting("COSMOS_COINGECKO_ID") || "osmosis";
+
+      // 3) Check if custom RPC is set
+      const customRpc = runtime.getSetting("COSMOS_RPC_URL");
+      if (customRpc) {
+        // Build a minimal chainInfo object from environment
+        const customDenom = runtime.getSetting("COSMOS_CHAIN_DENOM") || "uosmo";
+        const customDecimals = Number(runtime.getSetting("COSMOS_CHAIN_DECIMALS") || 6);
+        const bech32Prefix = runtime.getSetting("COSMOS_BECH32_PREFIX") || "osmo";
+
+        const localChainInfo: CosmosChainInfo = {
+          chain_name: chainName,
+          bech32_prefix: bech32Prefix,
+          coingecko_id: coingeckoID,
+          apis: { rpc: [{ address: customRpc }] },
+          denom: customDenom,
+          decimals: customDecimals,
+          fees: {
+            fee_tokens: [
+              {
+                denom: customDenom,
+                average_gas_price: 0.025,
+              },
+            ],
+          },
+        };
+
+        const providerInstance = new WalletProvider(mnemonic, localChainInfo);
+        return providerInstance.getFormattedPortfolio(runtime);
+      } else {
+        // Use chain-registry
+        const chainData = chains.find((c) => c.chain_name === chainName);
+        if (!chainData) {
+          throw new Error(`Chain '${chainName}' not found in chain-registry`);
+        }
+
+        const chainDenom = chainData.fees?.fee_tokens?.[0]?.denom || "uosmo";
+        const chainDecimals = chainData.decimals ?? 6;
+
+        chainData.denom = chainDenom;
+        chainData.decimals = chainDecimals;
+
+        if (!chainData.coingecko_id) {
+          chainData.coingecko_id = coingeckoID;
+        }
+
+        const providerInstance = new WalletProvider(
+          mnemonic,
+          chainData as CosmosChainInfo
+        );
+        return providerInstance.getFormattedPortfolio(runtime);
+      }
+    } catch (error) {
+      console.error("Error in wallet provider:", error);
+      return null;
+    }
+  },
+};
