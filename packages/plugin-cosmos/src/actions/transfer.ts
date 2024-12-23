@@ -18,7 +18,7 @@ import {
   export interface TransferContent extends Content {
     recipient: string;
     amount: string | number;
-    tokenAddress?: string; // optional for cw20 tokens
+    tokenAddress?: string; // optional if we want to handle cw20 or other tokens
   }
 
   function isTransferContent(
@@ -57,8 +57,8 @@ import {
   `;
 
   /**
-   * Quickly fetches /status on an RPC endpoint.
-   * Returns true if the call succeeds (2xx), false otherwise.
+   * Quickly checks if an RPC endpoint is reachable by fetching /status.
+   * Return true if ok, false if not.
    */
   async function canGetStatus(rpcUrl: string): Promise<boolean> {
     try {
@@ -67,17 +67,12 @@ import {
       if (!response.ok) {
         throw new Error(`RPC /status responded with HTTP ${response.status}`);
       }
-      // Optionally parse or check contents here if needed
       return true;
     } catch {
       return false;
     }
   }
 
-  /**
-   * Iterates over a list of possible RPC endpoints and
-   * returns the first one that responds successfully to /status.
-   */
   async function getWorkingRpcUrl(rpcUrls: string[]): Promise<string | null> {
     for (const url of rpcUrls) {
       if (await canGetStatus(url)) {
@@ -87,17 +82,20 @@ import {
     return null;
   }
 
+  /**
+   * Transfer tokens, preferring env-based RPC/DENOM/DECIMALS, else chain-registry.
+   */
   async function transferTokens(
     runtime: IAgentRuntime,
     recipient: string,
     amount: string
   ): Promise<string> {
     // 1) Identify chain + mnemonic
-    const chainName = runtime.getSetting("COSMOS_CHAIN_NAME");
-    if (!chainName) throw new Error("COSMOS_CHAIN_NAME not configured");
-
+    const chainName = runtime.getSetting("COSMOS_CHAIN_NAME") || "osmosis";
     const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
-    if (!mnemonic) throw new Error("COSMOS_MNEMONIC not configured");
+    if (!mnemonic) {
+      throw new Error("COSMOS_MNEMONIC not configured");
+    }
 
     // 2) Lookup chain in registry
     const chain = chains.find((c) => c.chain_name === chainName);
@@ -105,29 +103,52 @@ import {
       throw new Error(`Chain '${chainName}' not found in chain-registry`);
     }
 
-    // 3) Gather candidate RPC endpoints (plus a fallback)
+    // 3) Build a candidate RPC list
+    // First, check env-based RPC
+    const candidateRpcs: string[] = [];
+    const envRpc = runtime.getSetting("COSMOS_RPC_URL");
+    if (envRpc) {
+      candidateRpcs.push(envRpc);
+    }
+    // Then add chain-registry RPC endpoints
     const registryRpcs = chain.apis?.rpc?.map((r) => r.address) ?? [];
+    candidateRpcs.push(...registryRpcs);
+    // Fallback if all else fails
+    candidateRpcs.push("https://rpc.osmosis.zone");
 
-    const workingRpc = await getWorkingRpcUrl(registryRpcs);
+    // 4) Find a working RPC by checking /status
+    const workingRpc = await getWorkingRpcUrl(candidateRpcs);
     if (!workingRpc) {
       throw new Error(`No working RPC endpoint found for '${chainName}'`);
     }
 
-    // 4) Prepare denom/decimals from chain or env
+    // 5) Determine denom & decimals
+    // - If env is set, prefer that
+    // - else fallback to chain.fees
     const chainFees = chain.fees?.fee_tokens?.[0];
-    const defaultDenom = chainFees?.denom || "uosmo";
-    const denom = runtime.getSetting("COSMOS_DENOM") || defaultDenom;
-    const decimals = Number(runtime.getSetting("COSMOS_DECIMALS") || 6);
-    const averageGasPrice = chainFees?.average_gas_price ?? 0.025; // base denom
+    const envDenom = runtime.getSetting("COSMOS_DENOM");
+    const envDecimals = runtime.getSetting("COSMOS_DECIMALS");
 
-    // 5) Create signer + connect
-    const signer = await getOfflineSigner({ mnemonic, chain });
+    const defaultDenom = chainFees?.denom || "uosmo";
+    const denom = envDenom || defaultDenom;
+    const decimals = envDecimals ? Number(envDecimals) : 6; // or read from chain data
+
+    // average gas price
+    const averageGasPrice = chainFees?.average_gas_price ?? 0.025;
+
+    // 6) Create offline signer
+    const signer = await getOfflineSigner({
+      mnemonic,
+      chain,
+    });
+
+    // 7) Connect Stargate client w/ signer
     const stargateClient = await SigningStargateClient.connectWithSigner(
       workingRpc,
       signer
     );
 
-    // 6) Build the transaction
+    // 8) Build the transaction
     const [fromAccount] = await signer.getAccounts();
     const fromAddress = fromAccount.address;
     const shift = 10 ** decimals;
@@ -144,7 +165,7 @@ import {
     const messages = [msg];
     const memo = "";
 
-    // 7) Estimate gas usage + compute fee
+    // 9) Estimate gas usage
     const gasEstimated = await stargateClient.simulate(fromAddress, messages, memo);
     const feeAmount = Math.floor(gasEstimated * averageGasPrice).toString();
 
@@ -153,7 +174,7 @@ import {
       gas: gasEstimated.toString(),
     };
 
-    // 8) Sign & broadcast
+    // 10) Sign & broadcast
     const result = await stargateClient.signAndBroadcast(
       fromAddress,
       messages,
@@ -168,6 +189,7 @@ import {
     name: "SEND_COSMOS",
     similes: ["TRANSFER_COSMOS", "SEND_TOKENS", "TRANSFER_TOKENS", "PAY_COSMOS"],
     validate: async (_runtime: IAgentRuntime, _message: Memory) => {
+      // Add your validation logic if needed
       return true;
     },
     description: "Transfer native Cosmos tokens to another address",
@@ -178,27 +200,27 @@ import {
       _options: { [key: string]: unknown },
       callback?: HandlerCallback
     ): Promise<boolean> => {
-      // 1) Ensure state is up-to-date
+      // 1) Ensure up-to-date state
       if (!state) {
         state = (await runtime.composeState(message)) as State;
       } else {
         state = await runtime.updateRecentMessageState(state);
       }
 
-      // 2) Compose context for LLM extraction
+      // 2) Compose transfer context
       const transferContext = composeContext({
         state,
         template: transferTemplate,
       });
 
-      // 3) Extract the JSON object with recipient + amount
+      // 3) Generate JSON from user conversation
       const content = await generateObject({
         runtime,
         context: transferContext,
         modelClass: ModelClass.SMALL,
       });
 
-      // 4) Validate content
+      // 4) Validate
       if (!isTransferContent(runtime, content)) {
         console.error("Invalid content for SEND_COSMOS action.");
         if (callback) {
@@ -211,10 +233,14 @@ import {
       }
 
       try {
-        // 5) Execute the transfer
-        const txHash = await transferTokens(runtime, content.recipient, content.amount.toString());
+        // 5) Transfer
+        const txHash = await transferTokens(
+          runtime,
+          content.recipient,
+          content.amount.toString()
+        );
 
-        // 6) Callback success
+        // 6) If successful
         if (callback) {
           callback({
             text: `Successfully transferred ${content.amount} tokens to ${content.recipient}\nTransaction: ${txHash}`,
@@ -239,7 +265,7 @@ import {
       }
     },
 
-    // Example usage
+    // 7) Example usage
     examples: [
       [
         {
