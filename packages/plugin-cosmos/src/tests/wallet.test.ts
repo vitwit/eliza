@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { WalletProvider } from "../providers/wallet";
 import { defaultCharacter } from "@ai16z/eliza";
-import { assets, chains } from 'chain-registry/testnet';
-
-import BigNumber from "bignumber.js";
+import { chains } from 'chain-registry/testnet';
 
 // Mock NodeCache so we don't actually cache or cause side effects
 vi.mock("node-cache", () => {

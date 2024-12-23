@@ -12,7 +12,6 @@ import {
     getOfflineSignerProto as getOfflineSigner,
   } from "cosmjs-utils";
   import { SigningStargateClient } from "@cosmjs/stargate";
-  import { coins, StdFee } from "@cosmjs/amino";
 
   /**
    * Example chain registry interface (trimmed down).
@@ -133,7 +132,7 @@ import {
     /**
      * Connects and returns the SigningStargateClient instance
      */
-    public async connect(runtime: IAgentRuntime): Promise<SigningStargateClient> {
+    public async connect(_runtime: IAgentRuntime): Promise<SigningStargateClient> {
       if (this.stargateClient) return this.stargateClient;
 
       if (!this.mnemonic) {
@@ -229,7 +228,7 @@ import {
      * Example token price fetcher for demonstration.
      * In production, you might fetch from Coingecko or similar.
      */
-    private async fetchTokenPrice(runtime: IAgentRuntime): Promise<number> {
+    private async fetchTokenPrice(_runtime: IAgentRuntime): Promise<number> {
       const cacheKey = `price-${this.chainInfo.chain_name}`;
       const cachedPrice = this.cache.get<number>(cacheKey);
 
