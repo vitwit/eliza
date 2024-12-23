@@ -81,7 +81,7 @@ const msg: AnyCosmosMsg = {
     typeUrl: "/cosmos.bank.v1beta1.MsgSend",
     value: {
       fromAddress: "osmo1dxapu02qxcgmr2xt8v3ca6mhwtuygmc46rfryx",
-      toAddress: "osmo1nhql4cp5nnc97t5n627n4d7gwh4fcv895jcd94",
+      toAddress: "osmo1dxapu02qxcgmr2xt8v3ca6mhwtuygmc46rfryx",
       amount: [{ denom: "uosmo", amount: "1000" }],
     },
   };
@@ -94,16 +94,9 @@ const msg: AnyCosmosMsg = {
     myCallback // callback
   );
 
-    // 5) Call the transfer action
-    const success = await transferAction.handler(
-      mockedRuntime,
-      message as any,
-      testState
-    );
-
     // 6) Validate results
-    if (success) {
-      console.log("Transfer broadcasted successfully!", success);
+    if (result) {
+      console.log("Transfer broadcasted successfully!", result);
       console.log("Callback Result:", callbackResult);
       expect(callbackResult.text).toMatch(/Successfully transferred/i);
       expect(callbackResult.content?.hash).toBeDefined(); // the real TX hash

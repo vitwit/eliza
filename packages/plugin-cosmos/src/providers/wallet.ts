@@ -31,9 +31,7 @@ export interface CosmosChainInfo {
   };
 }
 
-/**
- * Basic token interface for the portfolio
- */
+/** Basic token interface for the portfolio */
 export interface CosmosToken {
   name: string;
   symbol: string;
@@ -44,60 +42,113 @@ export interface CosmosToken {
   valueUsd: string;
 }
 
-/**
- * Portfolio interface showing total USD plus an array of tokens
- */
+/** Portfolio interface showing total USD plus an array of tokens */
 interface WalletPortfolio {
   totalUsd: string;
   tokens: Array<CosmosToken>;
 }
 
 /**
- * Shared utility to connect to the Cosmos chain using a mnemonic and chainInfo.
- * Returns { stargateClient, signerAddress } for further usage (transfers, queries, etc.).
+ * This function now handles **all** environment overrides or
+ * chain registry logic to build a final `chainInfo`.
  */
-export async function connectWallet(
-  mnemonic: string,
-  chainInfo: CosmosChainInfo
-): Promise<{
-  stargateClient: SigningStargateClient;
-  signerAddress: string;
-}> {
+export function buildChainInfo(runtime: IAgentRuntime): CosmosChainInfo {
+  // 1) Read environment or defaults
+  const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
   if (!mnemonic) {
-    throw new Error("Cosmos wallet mnemonic not provided");
+    throw new Error("COSMOS_MNEMONIC not configured");
   }
 
-  // 1) Grab the first RPC endpoint
+  const chainName = runtime.getSetting("COSMOS_CHAIN_NAME") || "osmosis";
+  const customRpc = runtime.getSetting("COSMOS_RPC_URL");
+  const coingeckoID = runtime.getSetting("COSMOS_COINGECKO_ID") || "osmosis";
+  const customDenom = runtime.getSetting("COSMOS_CHAIN_DENOM") || "uosmo";
+  const customDecimals = Number(runtime.getSetting("COSMOS_CHAIN_DECIMALS") || 6);
+  const bech32Prefix = runtime.getSetting("COSMOS_BECH32_PREFIX") || "osmo";
+
+  // 2) If user provided a custom RPC, build chain info from environment.
+  if (customRpc) {
+    return {
+      chain_name: chainName,
+      bech32_prefix: bech32Prefix,
+      coingecko_id: coingeckoID,
+      apis: { rpc: [{ address: customRpc }] },
+      denom: customDenom,
+      decimals: customDecimals,
+      fees: {
+        fee_tokens: [
+          {
+            denom: customDenom,
+            average_gas_price: 0.025,
+          },
+        ],
+      },
+    };
+  }
+
+  // 3) Otherwise, fallback to chain-registry
+  const chainData = chains.find((c) => c.chain_name === chainName);
+  if (!chainData) {
+    throw new Error(`Chain '${chainName}' not found in chain-registry`);
+  }
+
+  // Use chain registry info + fallback
+  const chainDenom = chainData.fees?.fee_tokens?.[0]?.denom || "uosmo";
+  const chainDecimals = chainData.decimals ?? 6;
+  if (!chainData.coingecko_id) {
+    chainData.coingecko_id = coingeckoID;
+  }
+  chainData.denom = chainDenom;
+  chainData.decimals = chainDecimals;
+
+  return chainData as CosmosChainInfo;
+}
+
+/**
+ * The function that connects to Cosmos chain using environment or chain registry
+ * to build chain info. Returns { stargateClient, signerAddress }.
+ */
+export async function connectWallet(
+  runtime: IAgentRuntime
+): Promise<{ stargateClient: SigningStargateClient; signerAddress: string }> {
+  // 1) Ensure mnemonic
+  const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
+  if (!mnemonic) {
+    throw new Error("COSMOS_MNEMONIC not set in environment");
+  }
+
+  // 2) Build chain info from env or chain-registry
+  const chainInfo = buildChainInfo(runtime);
+
+  // 3) Grab the first RPC endpoint
   const rpcUrl = chainInfo.apis?.rpc?.[0]?.address;
   if (!rpcUrl) {
     throw new Error("No RPC endpoint specified in chainInfo");
   }
 
-  // 2) Create offline signer
+  // 4) Create offline signer
   const signer = await getOfflineSigner({
     mnemonic,
     chain: chainInfo,
   });
 
-  // 3) Connect Stargate client
-  const stargateClient = await SigningStargateClient.connectWithSigner(
-    rpcUrl,
-    signer
-  );
+  // 5) Connect Stargate client
+  const stargateClient = await SigningStargateClient.connectWithSigner(rpcUrl, signer);
 
-  // 4) Get the signer address
+  // 6) Derive address
   const [account] = await signer.getAccounts();
   const signerAddress = account.address;
+
+  console.log(
+    `connectWallet: Connected to chain '${chainInfo.chain_name}', address: ${signerAddress}`
+  );
 
   return { stargateClient, signerAddress };
 }
 
 /**
- * The main WalletProvider class
- * - Connects to chain (via chain-registry or environment overrides)
- * - Stores the signer address
- * - Exposes getAddress() for external usage
- * - Provides getFormattedPortfolio(...) to retrieve portfolio info
+ * The main WalletProvider class (unchanged except we remove logic that built chainInfo).
+ * We just call connectWallet(...) internally if needed.
  */
 export class WalletProvider implements Provider {
   private cache: NodeCache;
@@ -109,12 +160,9 @@ export class WalletProvider implements Provider {
     private chainInfo: CosmosChainInfo
   ) {
     console.log("WalletProvider instantiated for chain:", chainInfo.chain_name);
-    this.cache = new NodeCache({ stdTTL: 300 }); // 5-min TTL
+    this.cache = new NodeCache({ stdTTL: 300 });
   }
 
-  /**
-   * Eliza's Provider interface method: fetch some data (portfolio, etc.)
-   */
   async get(
     runtime: IAgentRuntime,
     _message: Memory,
@@ -129,31 +177,21 @@ export class WalletProvider implements Provider {
   }
 
   /**
-   * Public method to establish the connection (once).
+   * Connect once, storing stargateClient & signerAddress
    */
   public async connectWallet(runtime: IAgentRuntime): Promise<void> {
     if (this.stargateClient && this.signerAddress) return;
 
-    const { stargateClient, signerAddress } = await connectWallet(
-      this.mnemonic,
-      this.chainInfo
-    );
+    const { stargateClient, signerAddress } = await connectWallet(runtime);
     this.stargateClient = stargateClient;
     this.signerAddress = signerAddress;
   }
 
-  /**
-   * Public method to fetch the current signer address
-   */
   public getAddress(): string | null {
     return this.signerAddress;
   }
 
-  /**
-   * Example: fetch a single-token portfolio, with price from Coingecko
-   */
   async fetchPortfolioValue(runtime: IAgentRuntime): Promise<WalletPortfolio> {
-    // In-memory caching for demonstration
     const cacheKey = `portfolio-${this.chainInfo.chain_name}`;
     const cachedValue = this.cache.get<WalletPortfolio>(cacheKey);
     if (cachedValue) {
@@ -161,26 +199,21 @@ export class WalletProvider implements Provider {
       return cachedValue;
     }
 
-    // Make sure we're connected
-    await this.connectWallet(runtime);
+    await this.connectWallet(runtime); // ensures stargateClient + signerAddress are set
     if (!this.stargateClient || !this.signerAddress) {
       throw new Error("Unable to fetch balances - not connected");
     }
 
-    // Denom & decimals from chainInfo
-    const denom = this.chainInfo.denom;
+    const denom = this.chainInfo.denom ?? "uosmo";
     const decimals = this.chainInfo.decimals ?? 6;
 
-    // Get balance
     const balances = await this.stargateClient.getAllBalances(this.signerAddress);
     const baseTokenBalance = balances.find((b) => b.denom === denom);
     const rawBalance = baseTokenBalance?.amount ?? "0";
 
-    // Price from Coingecko
-    const cgID = this.chainInfo.coingecko_id;
+    const cgID = this.chainInfo.coingecko_id || "osmosis";
     const tokenPriceUsd = await this.fetchTokenPrice(cgID);
 
-    // Convert minimal denom -> "1" denom
     const convertedBalance = new BigNumber(rawBalance).shiftedBy(-decimals);
     const valueUsd = convertedBalance.multipliedBy(tokenPriceUsd).toFixed();
 
@@ -188,30 +221,26 @@ export class WalletProvider implements Provider {
       totalUsd: valueUsd,
       tokens: [
         {
-          name: this.chainInfo.chain_name ?? "Cosmos Chain",
-          symbol: denom?.toUpperCase() || "N/A",
+          name: this.chainInfo.chain_name,
+          symbol: denom.toUpperCase(),
           decimals,
           balance: rawBalance,
-          uiAmount: convertedBalance.toString(),
-          priceUsd: tokenPriceUsd.toString(),
+          uiAmount: convertedBalance?.toString(),
+          priceUsd: tokenPriceUsd?.toString(),
           valueUsd,
         },
       ],
     };
 
-    // Cache the result
     this.cache.set(cacheKey, portfolio);
     return portfolio;
   }
 
-  /**
-   * Example price fetcher from Coingecko
-   */
   private async fetchTokenPrice(cgID: string): Promise<number> {
     const cacheKey = `price-${cgID}`;
     const cachedPrice = this.cache.get<number>(cacheKey);
-    if (cachedPrice) {
-      return cachedPrice;
+    if (!cachedPrice) {
+      return 0;
     }
 
     try {
@@ -225,7 +254,6 @@ export class WalletProvider implements Provider {
       const data = await response.json();
       const price = data[cgID]?.usd ?? 0;
       this.cache.set(cacheKey, price);
-
       return price;
     } catch (error) {
       console.error("Error fetching token price:", error);
@@ -233,9 +261,6 @@ export class WalletProvider implements Provider {
     }
   }
 
-  /**
-   * Format the portfolio into a text string
-   */
   formatPortfolio(portfolio: WalletPortfolio): string {
     let output = `Chain: ${this.chainInfo.chain_name}\n`;
 
@@ -260,12 +285,10 @@ export class WalletProvider implements Provider {
     return output;
   }
 
-  /**
-   * Convenience method: fetch + format
-   */
   async getFormattedPortfolio(runtime: IAgentRuntime): Promise<string> {
     try {
       const portfolio = await this.fetchPortfolioValue(runtime);
+
       return this.formatPortfolio(portfolio);
     } catch (error) {
       console.error("Error generating portfolio report:", error);
@@ -276,72 +299,24 @@ export class WalletProvider implements Provider {
 
 /**
  * Single exported provider (default behavior for Eliza data fetch).
- * - If COSMOS_RPC_URL is set, we build a minimal chainInfo from environment.
- * - Otherwise, fallback to chain-registry for chain details.
  */
 export const walletProvider: Provider = {
   get: async (runtime, message, state) => {
     try {
-      // 1) Ensure mnemonic
+      // 1) Ensure mnemonic is set
       const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
       if (!mnemonic) {
         throw new Error("COSMOS_MNEMONIC not configured");
       }
 
-      // 2) Prepare chainName & coingeckoID
-      const chainName = runtime.getSetting("COSMOS_CHAIN_NAME") || "osmosis";
-      const coingeckoID = runtime.getSetting("COSMOS_COINGECKO_ID") || "osmosis";
+      // 2) Build chainInfo from environment or chain registry
+      const chainInfo = buildChainInfo(runtime);
 
-      // 3) Check if custom RPC is set
-      const customRpc = runtime.getSetting("COSMOS_RPC_URL");
-      if (customRpc) {
-        // Build a minimal chainInfo object from environment
-        const customDenom = runtime.getSetting("COSMOS_CHAIN_DENOM") || "uosmo";
-        const customDecimals = Number(runtime.getSetting("COSMOS_CHAIN_DECIMALS") || 6);
-        const bech32Prefix = runtime.getSetting("COSMOS_BECH32_PREFIX") || "osmo";
+      // 3) Create a local instance of the wallet provider
+      const providerInstance = new WalletProvider(mnemonic, chainInfo);
 
-        const localChainInfo: CosmosChainInfo = {
-          chain_name: chainName,
-          bech32_prefix: bech32Prefix,
-          coingecko_id: coingeckoID,
-          apis: { rpc: [{ address: customRpc }] },
-          denom: customDenom,
-          decimals: customDecimals,
-          fees: {
-            fee_tokens: [
-              {
-                denom: customDenom,
-                average_gas_price: 0.025,
-              },
-            ],
-          },
-        };
-
-        const providerInstance = new WalletProvider(mnemonic, localChainInfo);
-        return providerInstance.getFormattedPortfolio(runtime);
-      } else {
-        // Use chain-registry
-        const chainData = chains.find((c) => c.chain_name === chainName);
-        if (!chainData) {
-          throw new Error(`Chain '${chainName}' not found in chain-registry`);
-        }
-
-        const chainDenom = chainData.fees?.fee_tokens?.[0]?.denom || "uosmo";
-        const chainDecimals = chainData.decimals ?? 6;
-
-        chainData.denom = chainDenom;
-        chainData.decimals = chainDecimals;
-
-        if (!chainData.coingecko_id) {
-          chainData.coingecko_id = coingeckoID;
-        }
-
-        const providerInstance = new WalletProvider(
-          mnemonic,
-          chainData as CosmosChainInfo
-        );
-        return providerInstance.getFormattedPortfolio(runtime);
-      }
+      // 4) Return the formatted portfolio
+      return providerInstance.getFormattedPortfolio(runtime);
     } catch (error) {
       console.error("Error in wallet provider:", error);
       return null;
