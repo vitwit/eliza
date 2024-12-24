@@ -113,8 +113,6 @@ import {
     // Then add chain-registry RPC endpoints
     const registryRpcs = chain.apis?.rpc?.map((r) => r.address) ?? [];
     candidateRpcs.push(...registryRpcs);
-    // Fallback if all else fails
-    candidateRpcs.push("https://rpc.osmosis.zone");
 
     // 4) Find a working RPC by checking /status
     const workingRpc = await getWorkingRpcUrl(candidateRpcs);
