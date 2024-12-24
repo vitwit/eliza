@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import cosmosSendTokenAction from "../actions/transfer";
 import { defaultCharacter, State, Memory, IAgentRuntime } from "@ai16z/eliza";
-import { estimateGas } from "../providers/wallet";
 
 vi.mock("@ai16z/eliza", async () => {
   const actual = await vi.importActual("@ai16z/eliza");
@@ -63,7 +62,7 @@ describe("Cosmos Transfer Integration Test", () => {
     } as unknown as IAgentRuntime;
 
     mockedMemory = {
-      get: (k: string) => null,
+      get: () => {},
       set: () => {},
     };
 

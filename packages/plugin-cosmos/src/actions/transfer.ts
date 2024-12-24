@@ -103,7 +103,7 @@ import {
       "SEND_TOKENS_ON_COSMOS",
       "PAY_ON_COSMOS",
     ],
-    validate: async (runtime: IAgentRuntime, _message: Memory) => {
+    validate: async (_runtime: IAgentRuntime, _message: Memory) => {
       // If you have chain config checks or environment validation, do them here
       return true;
     },
@@ -196,7 +196,7 @@ import {
             },
           };
 
-        let newMemo = memo + " - sent via Vitwit's Eliza Cosmos plugin"
+        const newMemo = memo + " - sent via Vitwit's Eliza Cosmos plugin"
 
         const fee: StdFee = await estimateGas([cosmosBankMsgForFees], newMemo, stargateClient, signerAddress, chainInfo)
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { walletProvider } from "../providers/wallet"; // Your final wallet.ts
-import { defaultCharacter, State } from "@ai16z/eliza";
+import { defaultCharacter } from "@ai16z/eliza";
 import { chains } from "chain-registry";
 
 // 1) Mock NodeCache so there's no actual caching side effects

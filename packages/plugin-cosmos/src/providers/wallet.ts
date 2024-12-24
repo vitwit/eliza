@@ -1,7 +1,7 @@
 import { chains } from "chain-registry";
 import NodeCache from "node-cache";
 import BigNumber from "bignumber.js";
-import { SigningStargateClient, StargateClient, StdFee } from "@cosmjs/stargate";
+import { SigningStargateClient, StdFee } from "@cosmjs/stargate";
 import { getOfflineSignerProto as getOfflineSigner } from "cosmjs-utils";
 import {
   IAgentRuntime,
@@ -56,12 +56,12 @@ export function buildChainInfo(runtime: IAgentRuntime): CosmosChainInfo {
     throw new Error("COSMOS_MNEMONIC not configured");
   }
 
-  const chainName = runtime.getSetting("COSMOS_CHAIN_NAME") || "osmosis";
+  const chainName = runtime.getSetting("COSMOS_CHAIN_NAME");
   const customRpc = runtime.getSetting("COSMOS_RPC_URL");
-  const coingeckoID = runtime.getSetting("COSMOS_COINGECKO_ID") || "osmosis";
-  const customDenom = runtime.getSetting("COSMOS_CHAIN_DENOM") || "uosmo";
+  const coingeckoID = runtime.getSetting("COSMOS_COINGECKO_ID");
+  const customDenom = runtime.getSetting("COSMOS_CHAIN_DENOM");
   const customDecimals = Number(runtime.getSetting("COSMOS_CHAIN_DECIMALS") || 6);
-  const bech32Prefix = runtime.getSetting("COSMOS_BECH32_PREFIX") || "osmo";
+  const bech32Prefix = runtime.getSetting("COSMOS_BECH32_PREFIX");
 
   // 2) If user provided a custom RPC, build chain info from environment.
   if (customRpc) {
@@ -108,22 +108,22 @@ export function buildChainInfo(runtime: IAgentRuntime): CosmosChainInfo {
 export async function connectWallet(
   runtime: IAgentRuntime
 ): Promise<{ stargateClient: SigningStargateClient; signerAddress: string, chainInfo: CosmosChainInfo }> {
-  // 1) Ensure mnemonic
+  // Ensure mnemonic
   const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
   if (!mnemonic) {
     throw new Error("COSMOS_MNEMONIC not set in environment");
   }
 
-  // 2) Build chain info from env or chain-registry
+  // Build chain info from env or chain-registry
   const chainInfo = buildChainInfo(runtime);
 
-  // 3) Grab the first RPC endpoint
+  // Grab the first RPC endpoint
   const rpcUrl = chainInfo.apis?.rpc?.[0]?.address;
   if (!rpcUrl) {
     throw new Error("No RPC endpoint specified in chainInfo");
   }
 
-  // 4) Create offline signer
+  // Create offline signer
   const signer = await getOfflineSigner({
     mnemonic,
     chain: chainInfo,
@@ -348,21 +348,21 @@ export class WalletProvider implements Provider {
  * Single exported provider (default behavior for Eliza data fetch).
  */
 export const walletProvider: Provider = {
-  get: async (runtime, message, state) => {
+  get: async (runtime, _message, _state) => {
     try {
-      // 1) Ensure mnemonic is set
+      // Ensure mnemonic is set
       const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
       if (!mnemonic) {
         throw new Error("COSMOS_MNEMONIC not configured");
       }
 
-      // 2) Build chainInfo from environment or chain registry
+      // Build chainInfo from environment or chain registry
       const chainInfo = buildChainInfo(runtime);
 
-      // 3) Create a local instance of the wallet provider
+      // Create a local instance of the wallet provider
       const providerInstance = new WalletProvider(mnemonic, chainInfo);
 
-      // 4) Return the formatted portfolio
+      // Return the formatted portfolio
       return providerInstance.getFormattedPortfolio(runtime);
     } catch (error) {
       console.error("Error in wallet provider:", error);
