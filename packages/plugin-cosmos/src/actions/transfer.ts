@@ -1,196 +1,114 @@
 import {
+    type Action,
     ActionExample,
+    composeContext,
     Content,
+    elizaLogger,
+    generateObjectDeprecated,
     HandlerCallback,
     IAgentRuntime,
     Memory,
     ModelClass,
     State,
-    type Action,
-    composeContext,
-    generateObject,
   } from "@ai16z/eliza";
-  import { chains } from "chain-registry";
-  import { getOfflineSignerProto as getOfflineSigner } from "cosmjs-utils";
-  import { SigningStargateClient } from "@cosmjs/stargate";
-  import { coins, StdFee } from "@cosmjs/amino";
 
-  export interface TransferContent extends Content {
-    recipient: string;
-    amount: string | number;
-    tokenAddress?: string; // optional if we want to handle cw20 or other tokens
+  import { connectWallet, estimateGas} from "../providers/wallet";
+  import { StdFee } from "@cosmjs/stargate";
+
+  /**
+   * Example interface for user-specified Cosmos transfer details.
+   * You can add fields like chainName, memo, etc., as needed.
+   */
+  export interface TransferCosmosContent extends Content {
+    tokenDenom: string;     // e.g. "uosmo"
+    recipient?: string;     // e.g. "cosmos1abc..."
+    amount: string | number; // e.g. "1000" in minimal units or a float
+    memo?: string;          // optional memo
   }
 
-  function isTransferContent(
-    runtime: IAgentRuntime,
-    content: any
-  ): content is TransferContent {
-    return (
-      typeof content.recipient === "string" &&
-      (typeof content.amount === "string" || typeof content.amount === "number")
-    );
+  /**
+   * Quick type-guard to confirm user content is valid.
+   */
+  export function isTransferCosmosContent(
+    content: TransferCosmosContent
+  ): content is TransferCosmosContent {
+    // Basic type checks
+    const validTypes =
+      typeof content.tokenDenom === "string" &&
+      (typeof content.amount === "string" || typeof content.amount === "number");
+
+    if (!validTypes) {
+      return false;
+    }
+
+    // If recipient is provided, check it starts with "cosmos1" or "osmo1" etc.
+    // (Adjust this logic for your chain’s prefix)
+    if (content.recipient) {
+      if (
+        !(content.recipient.startsWith("cosmos1") ||
+          content.recipient.startsWith("osmo1"))
+      ) {
+        return false;
+      }
+    }
+
+    // If memo is present, just ensure it’s a string
+    if (content.memo && typeof content.memo !== "string") {
+      return false;
+    }
+
+    return true;
   }
 
-  const transferTemplate = `Respond with a JSON markdown block containing only the extracted values. Use null for any values that cannot be determined.
+  /**
+   * Prompt template for Eliza to parse the token transfer fields from user messages.
+   * Adjust to fit your chain and your known tokens (like OSMO, ATOM, etc.).
+   */
+  const transferTemplate = `Respond with a JSON markdown block containing only these fields:
+  - tokenDenom
+  - recipient
+  - amount
+  - memo (optional)
+
+  Use null if a field is not determinable.
 
   Example response:
   \`\`\`json
   {
-    "recipient": "osmo1abcd1234...",
-    "amount": "1.5",
-    "tokenAddress": null
+    "tokenDenom": "uosmo",
+    "recipient": "osmo1xyzabc...",
+    "amount": "1000",
+    "memo": "payment for services"
   }
   \`\`\`
 
   {{recentMessages}}
 
-  Given the recent messages and wallet information below:
-
-  {{walletInfo}}
-
-  Extract the following information about the requested token transfer:
-  - Recipient address
-  - Amount to transfer
-  - Token contract address (null for native transfers)
-
-  Respond with a JSON markdown block containing only the extracted values.
+  Given the conversation above, extract the following information for a Cosmos token transfer:
+  - The token denom or symbol (e.g. uosmo)
+  - The recipient address (if specified)
+  - The amount
+  - An optional memo
   `;
 
   /**
-   * Quickly checks if an RPC endpoint is reachable by fetching /status.
-   * Return true if ok, false if not.
+   * Action to parse user’s request to send a token on Cosmos, then sign & broadcast.
    */
-  async function canGetStatus(rpcUrl: string): Promise<boolean> {
-    try {
-      const url = rpcUrl.endsWith("/") ? rpcUrl + "status" : `${rpcUrl}/status`;
-      const response = await fetch(url, { method: "GET" });
-      if (!response.ok) {
-        throw new Error(`RPC /status responded with HTTP ${response.status}`);
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async function getWorkingRpcUrl(rpcUrls: string[]): Promise<string | null> {
-    for (const url of rpcUrls) {
-      if (await canGetStatus(url)) {
-        return url;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Transfer tokens, preferring env-based RPC/DENOM/DECIMALS, else chain-registry.
-   */
-  async function transferTokens(
-    runtime: IAgentRuntime,
-    recipient: string,
-    amount: string
-  ): Promise<string> {
-    // 1) Identify chain + mnemonic
-    const chainName = runtime.getSetting("COSMOS_CHAIN_NAME") || "osmosis";
-    const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
-    if (!mnemonic) {
-      throw new Error("COSMOS_MNEMONIC not configured");
-    }
-
-    // 2) Lookup chain in registry
-    const chain = chains.find((c) => c.chain_name === chainName);
-    if (!chain) {
-      throw new Error(`Chain '${chainName}' not found in chain-registry`);
-    }
-
-    // 3) Build a candidate RPC list
-    // First, check env-based RPC
-    const candidateRpcs: string[] = [];
-    const envRpc = runtime.getSetting("COSMOS_RPC_URL");
-    if (envRpc) {
-      candidateRpcs.push(envRpc);
-    }
-    // Then add chain-registry RPC endpoints
-    const registryRpcs = chain.apis?.rpc?.map((r) => r.address) ?? [];
-    candidateRpcs.push(...registryRpcs);
-
-    // 4) Find a working RPC by checking /status
-    const workingRpc = await getWorkingRpcUrl(candidateRpcs);
-    if (!workingRpc) {
-      throw new Error(`No working RPC endpoint found for '${chainName}'`);
-    }
-
-    // 5) Determine denom & decimals
-    // - If env is set, prefer that
-    // - else fallback to chain.fees
-    const chainFees = chain.fees?.fee_tokens?.[0];
-    const envDenom = runtime.getSetting("COSMOS_DENOM");
-    const envDecimals = runtime.getSetting("COSMOS_DECIMALS");
-
-    const defaultDenom = chainFees?.denom || "uosmo";
-    const denom = envDenom || defaultDenom;
-    const decimals = envDecimals ? Number(envDecimals) : 6; // or read from chain data
-
-    // average gas price
-    const averageGasPrice = chainFees?.average_gas_price ?? 0.025;
-
-    // 6) Create offline signer
-    const signer = await getOfflineSigner({
-      mnemonic,
-      chain,
-    });
-
-    // 7) Connect Stargate client w/ signer
-    const stargateClient = await SigningStargateClient.connectWithSigner(
-      workingRpc,
-      signer
-    );
-
-    // 8) Build the transaction
-    const [fromAccount] = await signer.getAccounts();
-    const fromAddress = fromAccount.address;
-    const shift = 10 ** decimals;
-    const sendAmount = String(Math.floor(Number(amount) * shift));
-
-    const msg = {
-      typeUrl: "/cosmos.bank.v1beta1.MsgSend",
-      value: {
-        fromAddress,
-        toAddress: recipient,
-        amount: coins(sendAmount, denom),
-      },
-    };
-    const messages = [msg];
-    const memo = "";
-
-    // 9) Estimate gas usage
-    const gasEstimated = await stargateClient.simulate(fromAddress, messages, memo);
-    const feeAmount = Math.floor(gasEstimated * averageGasPrice).toString();
-
-    const fee: StdFee = {
-      amount: coins(feeAmount, denom),
-      gas: gasEstimated.toString(),
-    };
-
-    // 10) Sign & broadcast
-    const result = await stargateClient.signAndBroadcast(
-      fromAddress,
-      messages,
-      fee,
-      memo
-    );
-
-    return result.transactionHash;
-  }
-
-  export const executeTransfer: Action = {
-    name: "SEND_COSMOS",
-    similes: ["TRANSFER_COSMOS", "SEND_TOKENS", "TRANSFER_TOKENS", "PAY_COSMOS"],
+  export default {
+    name: "COSMOS_SEND_TOKEN",
+    // synonyms or “similes” that might trigger this action
+    similes: [
+      "TRANSFER_TOKEN_ON_COSMOS",
+      "TRANSFER_TOKENS_ON_COSMOS",
+      "SEND_TOKENS_ON_COSMOS",
+      "PAY_ON_COSMOS",
+    ],
     validate: async (_runtime: IAgentRuntime, _message: Memory) => {
-      // Add your validation logic if needed
+      // If you have chain config checks or environment validation, do them here
       return true;
     },
-    description: "Transfer native Cosmos tokens to another address",
+    description:
+      "Use this action if the user requests sending a token on Cosmos. Extracts token denom, recipient, and amount from the conversation, then executes.",
     handler: async (
       runtime: IAgentRuntime,
       message: Memory,
@@ -198,91 +116,156 @@ import {
       _options: { [key: string]: unknown },
       callback?: HandlerCallback
     ): Promise<boolean> => {
-      // 1) Ensure up-to-date state
+      elizaLogger.log("Starting COSMOS_SEND_TOKEN handler...");
+
+      // Ensure we have a state with recent user messages
       if (!state) {
         state = (await runtime.composeState(message)) as State;
       } else {
         state = await runtime.updateRecentMessageState(state);
       }
 
-      // 2) Compose transfer context
+      // Compose a context with the transfer template
       const transferContext = composeContext({
         state,
         template: transferTemplate,
       });
 
-      // 3) Generate JSON from user conversation
-      const content = await generateObject({
+      // Ask the LLM to produce JSON with the relevant fields
+      const content = await generateObjectDeprecated({
         runtime,
         context: transferContext,
-        modelClass: ModelClass.SMALL,
+        modelClass: ModelClass.MEDIUM,
       });
 
-      // 4) Validate
-      if (!isTransferContent(runtime, content)) {
-        console.error("Invalid content for SEND_COSMOS action.");
+      elizaLogger.debug("Cosmos transfer parsed content:", content);
+
+      // Validate the parsed content
+      if (!isTransferCosmosContent(content)) {
+        elizaLogger.error("Invalid transfer content for COSMOS_SEND_TOKEN.");
         if (callback) {
           callback({
-            text: "Unable to process transfer request. Invalid content provided.",
-            content: { error: "Invalid transfer content" },
+            text: "Not enough information to transfer tokens on Cosmos. Need 'tokenDenom', 'recipient', 'amount'.",
+            content: { error: "Invalid cosmos transfer content" },
           });
         }
         return false;
       }
 
-      try {
-        // 5) Transfer
-        const txHash = await transferTokens(
-          runtime,
-          content.recipient,
-          content.amount.toString()
-        );
+      // We have valid transfer content
+      const { tokenDenom, recipient, amount, memo } = content;
 
-        // 6) If successful
+      if (!recipient) {
+        // If user didn't specify a valid recipient, we can't proceed
+        elizaLogger.error("No valid recipient provided.");
         if (callback) {
           callback({
-            text: `Successfully transferred ${content.amount} tokens to ${content.recipient}\nTransaction: ${txHash}`,
-            content: {
-              success: true,
-              signature: txHash,
-              amount: content.amount,
-              recipient: content.recipient,
+            text: "No valid recipient for Cosmos transfer. Please provide an address.",
+            content: { error: "Missing recipient" },
+          });
+        }
+        return false;
+      }
+
+      if (!amount) {
+        elizaLogger.error("No valid amount provided.");
+        if (callback) {
+          callback({
+            text: "No valid amount for Cosmos transfer. Please provide a numeric value.",
+            content: { error: "Missing amount" },
+          });
+        }
+        return false;
+      }
+
+      // Convert string or number to string minimal units
+      // You might need to handle decimals for a real chain
+      const sendAmount = String(amount);
+
+      try {
+        // 1) Connect to the chain
+        const { stargateClient, signerAddress, chainInfo } = await connectWallet(runtime);
+
+        // 2) Estimate Gas
+        const cosmosBankMsgForFees = {
+            typeUrl: "/cosmos.bank.v1beta1.MsgSend",
+            value: {
+              fromAddress: signerAddress,
+              toAddress: recipient,
+              amount: [{ denom: tokenDenom, amount: sendAmount }],
             },
+          };
+
+        const newMemo = memo + " - sent via Vitwit's Eliza Cosmos plugin"
+
+        const fee: StdFee = await estimateGas([cosmosBankMsgForFees], newMemo, stargateClient, signerAddress, chainInfo)
+
+        // 3) Perform the send
+        elizaLogger.log(
+          `Transferring ${sendAmount} ${tokenDenom} from ${signerAddress} to ${recipient} ...`
+        );
+
+        const result = await stargateClient.sendTokens(
+          signerAddress,
+          recipient,
+          [{ denom: tokenDenom, amount: sendAmount }],
+          fee,
+          newMemo
+        );
+
+        if (result.code !== 0) {
+          throw new Error(`Broadcast failed with code ${result.code}`);
+        }
+
+        const successMsg = `Transfer completed successfully! TxHash: ${result.transactionHash}`;
+        elizaLogger.success(successMsg);
+
+        if (callback) {
+          callback({
+            text: successMsg,
+            content: {},
           });
         }
         return true;
-      } catch (error) {
-        console.error("Error during Cosmos transfer:", error);
+      } catch (error: any) {
+        elizaLogger.error("Error during cosmos token transfer:", error);
         if (callback) {
           callback({
-            text: `Error transferring tokens: ${error}`,
-            content: { error },
+            text: `Error transferring tokens: ${error.message}`,
+            content: { message: content },
           });
         }
         return false;
       }
     },
 
-    // 7) Example usage
+    // Example dialogues, similar to the Starknet approach
     examples: [
       [
         {
           user: "{{user1}}",
           content: {
-            text: "Send 1.5 tokens to osmo1abcd1234...",
+            text: "Send 10 OSMO to osmo1xyzabc... with memo 'rent payment'",
           },
         },
         {
-          user: "{{user2}}",
+          user: "{{agent}}",
           content: {
-            text: "I'll send 1.5 OSMO now...",
-            action: "SEND_COSMOS",
+            text: "Sure, sending 10 OSMO to osmo1xyzabc... now. Let me confirm once done.",
+          },
+        },
+      ],
+      [
+        {
+          user: "{{user1}}",
+          content: {
+            text: "Transfer 50 ATOM to cosmos1abc123...",
           },
         },
         {
-          user: "{{user2}}",
+          user: "{{agent}}",
           content: {
-            text: "Successfully sent 1.5 OSMO to osmo1abcd1234...\nTransaction: ABC123XYZ",
+            text: "Initiating transfer of 50 ATOM to cosmos1abc123.... One moment.",
           },
         },
       ],
