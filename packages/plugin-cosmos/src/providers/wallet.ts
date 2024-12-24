@@ -1,7 +1,7 @@
 import { chains } from "chain-registry";
 import NodeCache from "node-cache";
 import BigNumber from "bignumber.js";
-import { SigningStargateClient, StdFee } from "@cosmjs/stargate";
+import { SigningStargateClient, StargateClient, StdFee } from "@cosmjs/stargate";
 import { getOfflineSignerProto as getOfflineSigner } from "cosmjs-utils";
 import {
   IAgentRuntime,
@@ -9,11 +9,9 @@ import {
   Provider,
   State
 } from "@ai16z/eliza";
+import { M } from "vite/dist/node/types.d-aGj9QkWt";
 
-/**
- * Minimal CosmosChainInfo shape for demonstration.
- * Extend as needed to match your usage.
- */
+/** Minimal CosmosChainInfo shape */
 export interface CosmosChainInfo {
   chain_name: string;
   denom?: string;
@@ -110,7 +108,7 @@ export function buildChainInfo(runtime: IAgentRuntime): CosmosChainInfo {
  */
 export async function connectWallet(
   runtime: IAgentRuntime
-): Promise<{ stargateClient: SigningStargateClient; signerAddress: string }> {
+): Promise<{ stargateClient: SigningStargateClient; signerAddress: string, chainInfo: CosmosChainInfo }> {
   // 1) Ensure mnemonic
   const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
   if (!mnemonic) {
@@ -143,8 +141,58 @@ export async function connectWallet(
     `connectWallet: Connected to chain '${chainInfo.chain_name}', address: ${signerAddress}`
   );
 
-  return { stargateClient, signerAddress };
+  return { stargateClient, signerAddress, chainInfo };
 }
+
+ /**
+   * Public method to estimate gas for a given set of messages and memo.
+   * @param runtime - The agent runtime.
+   * @param msgs - An array of Cosmos SDK Msg objects representing the transaction.
+   * @param memo - An optional memo for the transaction.
+   * @returns A StdFee object containing the estimated fee.
+   */
+ export async function estimateGas(
+    msgs: any[],
+    memo: string = "",
+    stargateClient: SigningStargateClient,
+    signer: string,
+    chainInfo: CosmosChainInfo
+  ): Promise<StdFee> {
+    try {
+      // Simulate the transaction to estimate gas
+      const gasEstimated = await stargateClient.simulate(signer, msgs, memo);
+      console.log(`Estimated Gas: ${gasEstimated}`);
+
+      // Apply a buffer multiplier (e.g., 1.3) to the estimated gas
+      const gasWithBuffer = Math.ceil(gasEstimated * 1.3);
+      console.log(`Gas with buffer (1.3x): ${gasWithBuffer}`);
+
+      // Define the fee tokens based on chain info
+      const feeDenom = chainInfo.fees?.fee_tokens?.[0]?.denom || chainInfo.denom;
+      const averageGasPrice = chainInfo.fees?.fee_tokens?.[0]?.average_gas_price || 0.01;
+
+      // Calculate the fee amount: gas * gas price
+      const feeAmount = new BigNumber(gasWithBuffer).multipliedBy(averageGasPrice).decimalPlaces(0, BigNumber.ROUND_UP).toFixed();
+      console.log(`Fee Amount: ${feeAmount} ${feeDenom}`);
+
+      // Construct the StdFee object
+      const fee: StdFee = {
+        amount: [
+          {
+            denom: feeDenom,
+            amount: feeAmount,
+          },
+        ],
+        gas: gasWithBuffer.toString(),
+      };
+
+      return fee;
+    } catch (error) {
+      console.error("Error estimating gas:", error);
+      const fee: StdFee = {};
+      return fee;
+    }
+  }
 
 /**
  * The main WalletProvider class (unchanged except we remove logic that built chainInfo).

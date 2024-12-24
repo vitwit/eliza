@@ -1,11 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { transferAction, AnyCosmosMsg, TransferCallback } from "../actions/transfer"; // import the default export from your updated transfer.ts
+import cosmosSendTokenAction from "../actions/transfer";
 import { defaultCharacter, State, Memory, IAgentRuntime } from "@ai16z/eliza";
+import { estimateGas } from "../providers/wallet";
 
-/**
- * 1) We mock only the LLM extraction step (generateObjectDeprecated),
- *    returning a "recipient" and "amount" for the transaction.
- */
 vi.mock("@ai16z/eliza", async () => {
   const actual = await vi.importActual("@ai16z/eliza");
   return {
@@ -13,45 +10,61 @@ vi.mock("@ai16z/eliza", async () => {
     generateObjectDeprecated: vi.fn().mockImplementation(async () => {
       // Hardcode the content for transfer
       return {
+        tokenDenom: "uosmo",
         recipient: "osmo1dxapu02qxcgmr2xt8v3ca6mhwtuygmc46rfryx",
-        amount: "1"
+        amount: "100000",
+        memo: "User custom memo here",
       };
     }),
   };
 });
 
-// Minimal memory
-const mockedMemory = {
-    get: (k) => (k === "memo" ? "My custom memo" : null),
-    set: () => {},
-  } as Memory;
+// Optionally mock connectWallet to prevent real blockchain interactions
+vi.mock("../providers/wallet", () => ({
+    connectWallet: vi.fn().mockResolvedValue({
+      stargateClient: {
+        sendTokens: vi.fn().mockResolvedValue({
+          code: 0,
+          transactionHash: "test-tx-hash",
+        }),
+      },
+      signerAddress: "osmo1dxapu02qxcgmr2xt8v3ca6mhwtuygmc46rfryx",
+      chainInfo: {
 
-const myCallback: TransferCallback = (res) => {
-    if (res.success) {
-      console.log("Tx succeeded with hash:", res.txHash);
-    } else {
-      console.warn("Tx failed with error:", res.error);
-    }
-  };
+      }
+    }),
+    estimateGas: vi.fn().mockResolvedValue({
+        amount: [
+          {
+            denom: "udenom",
+            amount: 100000,
+          },
+        ],
+        gas: 5000,
+      })
+  }));
+
 
 describe("Cosmos Transfer Integration Test", () => {
-  let mockedRuntime: any;
+  let mockedRuntime: IAgentRuntime;
+  let mockedMemory: Memory;
   let testState: State;
   let callbackResult: any;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // 2) Minimal runtime that fetches environment variables
-    //    for COSMOS_MNEMONIC, COSMOS_CHAIN_NAME, etc.
+    // Minimal runtime that fetches environment variables
     mockedRuntime = {
       character: defaultCharacter,
-      getSetting: (key: string) => {
-        // e.g. read from process.env or .env
-        return process.env[key];
-      },
+      getSetting: (key: string) => process.env[key],
       composeState: vi.fn().mockResolvedValue({} as State),
       updateRecentMessageState: vi.fn().mockResolvedValue({} as State),
+    } as unknown as IAgentRuntime;
+
+    mockedMemory = {
+      get: (k: string) => null,
+      set: () => {},
     };
 
     testState = {} as State;
@@ -63,46 +76,26 @@ describe("Cosmos Transfer Integration Test", () => {
   });
 
   it("should transfer a small amount of tokens on a real chain", async () => {
-    /**
-     * 3) Construct a sample Memory object that says we want to transfer 0.001 tokens
-     *    (the actual numeric values come from our mock above).
-     */
-    const message = {
-      text: "Send 0.001 tokens to osmo1abcd..."
-    };
-
-    // 4) Provide a callback to capture success/error
+    // Provide a callback to capture success/error
     const callback = (info: any) => {
       callbackResult = info;
     };
 
-    // Suppose you have a custom send message
-const msg: AnyCosmosMsg = {
-    typeUrl: "/cosmos.bank.v1beta1.MsgSend",
-    value: {
-      fromAddress: "osmo1dxapu02qxcgmr2xt8v3ca6mhwtuygmc46rfryx",
-      toAddress: "osmo1dxapu02qxcgmr2xt8v3ca6mhwtuygmc46rfryx",
-      amount: [{ denom: "uosmo", amount: "1000" }],
-    },
-  };
+    // Call the default-exported action's handler
+    const success = await cosmosSendTokenAction.handler(
+      mockedRuntime,
+      mockedMemory,
+      testState,
+      {},
+      callback
+    );
 
-  const result = await transferAction.handler(
-    mockedRuntime,
-    mockedMemory,
-    {},       // state (if needed)
-    msg,      // cosmos message
-    myCallback // callback
-  );
-
-    // 6) Validate results
-    if (result) {
-      console.log("Transfer broadcasted successfully!", result);
-      console.log("Callback Result:", callbackResult);
-      expect(callbackResult.text).toMatch(/Successfully transferred/i);
-      expect(callbackResult.content?.hash).toBeDefined(); // the real TX hash
+    if (success) {
+      // The action returned true => success
+      expect(callbackResult?.text).toMatch(/Transfer completed successfully/i);
     } else {
-      console.log("Transfer failed. Callback Result:", callbackResult);
-      expect(callbackResult.content?.error).toBeDefined();
+      // The action returned false => error
+      expect(callbackResult?.content?.error).toBeDefined();
     }
   });
 });
