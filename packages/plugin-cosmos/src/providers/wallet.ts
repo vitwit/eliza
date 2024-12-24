@@ -9,7 +9,6 @@ import {
   Provider,
   State
 } from "@ai16z/eliza";
-import { M } from "vite/dist/node/types.d-aGj9QkWt";
 
 /** Minimal CosmosChainInfo shape */
 export interface CosmosChainInfo {
