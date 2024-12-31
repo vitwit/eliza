@@ -36,10 +36,6 @@ export interface CosmosToken {
     valueUsd: string;
 }
 
-// export async function loadCosmjsSigning() {
-//     return (await import("@cosmjs/proto-signing")).DirectSecp256k1Wallet;
-// }
-
 /** Portfolio interface showing total USD plus an array of tokens */
 interface WalletPortfolio {
     totalUsd: string;
@@ -121,11 +117,6 @@ export async function connectWallet(
 }> {
     const teeMode = runtime.getSetting("TEE_MODE") || TEEMode.OFF;
 
-    console.log(
-        "Teemode>>>>>>>>>>>>>>>>>>>.",
-        teeMode,
-        teeMode !== TEEMode.OFF
-    );
     // Build chain info from environment or chain-registry
     const chainInfo = buildChainInfo(runtime);
 
@@ -140,16 +131,12 @@ export async function connectWallet(
 
     const flag = teeMode !== TEEMode.OFF;
 
-    console.log("flag>>>>>>>>>.", flag);
     if (flag) {
-        console.log("helo>>>>>>>>>>>>>>>>>>>>>>>>");
-
         if (!privateKey || privateKey.length !== 32) {
             throw new Error(
                 "TEE_MODE is enabled. A valid 32-byte private key is required."
             );
         }
-
         const wallet = await DirectSecp256k1Wallet.fromKey(
             privateKey,
             chainInfo.bech32_prefix
@@ -157,12 +144,6 @@ export async function connectWallet(
         signer = wallet;
         const accounts = await wallet.getAccounts();
         signerAddress = accounts[0].address;
-
-        const walletPubKey = (await wallet.getAccounts())[0].pubkey;
-        console.log(
-            "Wallet Public Key:>>>>>>>>>",
-            Buffer.from(walletPubKey).toString("hex")
-        );
     } else {
         // Non-TEE Mode requires a mnemonic
         const mnemonic = runtime.getSetting("COSMOS_MNEMONIC");
@@ -177,7 +158,11 @@ export async function connectWallet(
             mnemonic,
             chain: chainInfo,
         });
+
+        console.log("signer>>>>>>>>>>>>..", signer);
     }
+
+    console.log("signer>>>>>>>>.", signer);
 
     // Connect Stargate client
     const stargateClient = await SigningStargateClient.connectWithSigner(
@@ -188,6 +173,8 @@ export async function connectWallet(
     // Derive address from the signer
     const [account] = await signer.getAccounts();
     signerAddress = account.address;
+
+    console.log("signerAddress>>>>>>", signerAddress);
 
     console.log(
         `connectWallet: Connected to chain '${chainInfo.chain_name}', address: ${signerAddress}`

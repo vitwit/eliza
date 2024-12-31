@@ -121,7 +121,6 @@ export default {
         _options: { [key: string]: unknown },
         callback?: HandlerCallback
     ): Promise<boolean> => {
-        console.log("??????????????????????????????????????????????????????");
         elizaLogger.log("Starting COSMOS_SEND_TOKEN handler...");
 
         // Ensure we have a state with recent user messages
@@ -185,25 +184,23 @@ export default {
             }
             return false;
         }
-
-        console.log("------------------1");
         // Convert string or number to string minimal units
         // You might need to handle decimals for a real chain
         const sendAmount = String(amount);
 
-        console.log("send amount>>>>>>>>.", sendAmount);
-
         try {
-            console.log("before getcosmoswalletKey>>>>>>>>>.");
             const CosmosTeeAddr = await getCosmosWalletKey(runtime, true);
 
-            console.log(
-                "CosmosTeeAddr>>>>>>>>>>>>>>>>>>.",
-                CosmosTeeAddr.address
-            );
             // 1) Connect to the chain
             const { stargateClient, signerAddress, chainInfo } =
                 await connectWallet(runtime, CosmosTeeAddr.privateKey);
+
+            console.log(
+                "stargateclien>>>>>>",
+                stargateClient,
+                signerAddress,
+                chainInfo
+            );
 
             // 2) Estimate Gas
             const cosmosBankMsgForFees = {

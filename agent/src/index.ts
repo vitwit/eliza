@@ -506,7 +506,12 @@ export async function createAgent(
         evaluators: [],
         character,
         // character.plugins are handled when clients are added
-        plugins: [teePlugin, cosmosPlugin].filter(Boolean),
+        plugins: [
+            ...(teeMode !== TEEMode.OFF && walletSecretSalt
+                ? [teePlugin, cosmosPlugin]
+                : []),
+            cosmosPlugin,
+        ].filter(Boolean),
         providers: [],
         actions: [],
         services: [],
