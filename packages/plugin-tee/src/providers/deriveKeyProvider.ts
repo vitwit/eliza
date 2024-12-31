@@ -6,6 +6,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { PrivateKeyAccount, keccak256 } from "viem";
 import { RemoteAttestationProvider } from "./remoteAttestationProvider";
 import { TEEMode, RemoteAttestationQuote } from "../types/tee";
+import secp256k1 from "secp256k1";
 
 interface DeriveKeyAttestationData {
     agentId: string;
@@ -19,7 +20,6 @@ class DeriveKeyProvider {
     constructor(teeMode?: string) {
         let endpoint: string | undefined;
 
-        // Both LOCAL and DOCKER modes use the simulator, just with different endpoints
         switch (teeMode) {
             case TEEMode.LOCAL:
                 endpoint = "http://localhost:8090";
@@ -108,7 +108,6 @@ class DeriveKeyProvider {
             const seedArray = new Uint8Array(seed);
             const keypair = Keypair.fromSeed(seedArray.slice(0, 32));
 
-            // Generate an attestation for the derived key data for public to verify
             const attestation = await this.generateDeriveKeyAttestation(
                 agentId,
                 keypair.publicKey.toBase58()
@@ -143,7 +142,6 @@ class DeriveKeyProvider {
             const hex = keccak256(deriveKeyResponse.asUint8Array());
             const keypair: PrivateKeyAccount = privateKeyToAccount(hex);
 
-            // Generate an attestation for the derived key data for public to verify
             const attestation = await this.generateDeriveKeyAttestation(
                 agentId,
                 keypair.address
@@ -156,6 +154,47 @@ class DeriveKeyProvider {
             throw error;
         }
     }
+
+    async deriveSecp256k1Keypair(
+        path: string,
+        subject: string,
+        agentId: string
+    ): Promise<{
+        keypair: { privateKey: string; publicKey: string };
+        attestation: RemoteAttestationQuote;
+    }> {
+        try {
+            if (!path || !subject) {
+                console.error(
+                    "Path and Subject are required for key derivation"
+                );
+            }
+
+            console.log("Deriving Secp256k1 Key in TEE...");
+            const derivedKey = await this.client.deriveKey(path, subject);
+            const uint8ArrayDerivedKey = derivedKey.asUint8Array();
+
+            const privateKey = uint8ArrayDerivedKey.slice(0, 32);
+            const publicKey = secp256k1.publicKeyCreate(privateKey, false);
+
+            const attestation = await this.generateDeriveKeyAttestation(
+                agentId,
+                Buffer.from(publicKey).toString("hex")
+            );
+            console.log("Secp256k1 Key Derived Successfully!");
+
+            return {
+                keypair: {
+                    privateKey: Buffer.from(privateKey).toString("hex"),
+                    publicKey: Buffer.from(publicKey).toString("hex"),
+                },
+                attestation,
+            };
+        } catch (error) {
+            console.error("Error deriving Secp256k1 key:", error);
+            throw error;
+        }
+    }
 }
 
 const deriveKeyProvider: Provider = {
@@ -164,7 +203,6 @@ const deriveKeyProvider: Provider = {
         const provider = new DeriveKeyProvider(teeMode);
         const agentId = runtime.agentId;
         try {
-            // Validate wallet configuration
             if (!runtime.getSetting("WALLET_SECRET_SALT")) {
                 console.error(
                     "Wallet secret salt is not configured in settings"
@@ -185,9 +223,24 @@ const deriveKeyProvider: Provider = {
                     secretSalt,
                     agentId
                 );
+                const cosmosKeypair = await provider.deriveSecp256k1Keypair(
+                    "/",
+                    secretSalt,
+                    agentId
+                );
+
+                console.log(
+                    ">>>>>>>>>>>>>>>>>>>>>>>>>.",
+                    cosmosKeypair.keypair.privateKey
+                );
+                console.log(
+                    ">>>>>>>>>>>>>>>>>>>>>>>>>.",
+                    solanaKeypair.keypair.publicKey
+                );
                 return JSON.stringify({
                     solana: solanaKeypair.keypair.publicKey,
                     evm: evmKeypair.keypair.address,
+                    cosmos: cosmosKeypair.keypair.publicKey,
                 });
             } catch (error) {
                 console.error("Error creating PublicKey:", error);
@@ -195,7 +248,9 @@ const deriveKeyProvider: Provider = {
             }
         } catch (error) {
             console.error("Error in derive key provider:", error.message);
-            return `Failed to fetch derive key information: ${error instanceof Error ? error.message : "Unknown error"}`;
+            return `Failed to fetch derive key information: ${
+                error instanceof Error ? error.message : "Unknown error"
+            }`;
         }
     },
 };
