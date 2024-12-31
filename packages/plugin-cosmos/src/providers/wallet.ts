@@ -5,7 +5,10 @@ import { SigningStargateClient, StdFee } from "@cosmjs/stargate";
 import { getOfflineSignerProto as getOfflineSigner } from "cosmjs-utils";
 import { IAgentRuntime, Memory, Provider, State } from "@elizaos/core";
 import { TEEMode } from "@elizaos/plugin-cosmos-tee";
-import { DirectSecp256k1Wallet } from "@cosmjs/proto-signing";
+import {
+    DirectSecp256k1HdWallet,
+    DirectSecp256k1Wallet,
+} from "@cosmjs/proto-signing";
 
 /** Minimal CosmosChainInfo shape */
 export interface CosmosChainInfo {
@@ -153,16 +156,17 @@ export async function connectWallet(
             );
         }
 
-        // Create offline signer with the mnemonic
-        signer = await getOfflineSigner({
-            mnemonic,
-            chain: chainInfo,
+        const wallet = await DirectSecp256k1HdWallet.fromMnemonic(mnemonic, {
+            prefix: "osmo",
         });
 
-        console.log("signer>>>>>>>>>>>>..", signer);
+        // Create offline signer with the mnemonic
+        // signer = await getOfflineSigner({
+        //     mnemonic,
+        //     chain: chainInfo,
+        // });
+        signer = wallet;
     }
-
-    console.log("signer>>>>>>>>.", signer);
 
     // Connect Stargate client
     const stargateClient = await SigningStargateClient.connectWithSigner(
@@ -173,8 +177,6 @@ export async function connectWallet(
     // Derive address from the signer
     const [account] = await signer.getAccounts();
     signerAddress = account.address;
-
-    console.log("signerAddress>>>>>>", signerAddress);
 
     console.log(
         `connectWallet: Connected to chain '${chainInfo.chain_name}', address: ${signerAddress}`

@@ -15,7 +15,6 @@ import { getCosmosWalletKey } from "../keypairUtils.ts";
 
 import { connectWallet, estimateGas } from "../providers/wallet";
 import { StdFee } from "@cosmjs/stargate";
-import { c } from "vitest/dist/reporters-5f784f42.js";
 
 /**
  * Example interface for user-specified Cosmos transfer details.
