@@ -225,6 +225,9 @@ export default {
                 newMemo
             );
 
+            // TODO : Handle `Invalid string. Length must be a multiple of 4` error
+            // Try to replace stargateClient with SigningCosmWasmClient
+
             if (result.code !== 0) {
                 throw new Error(`Broadcast failed with code ${result.code}`);
             }

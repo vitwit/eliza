@@ -667,7 +667,6 @@ async function startAgent(
     try {
         character.id ??= stringToUuid(character.name);
         character.username ??= character.name;
-
         const token = getTokenForProvider(character.modelProvider, character);
         const dataDir = path.join(__dirname, "../data");
 
