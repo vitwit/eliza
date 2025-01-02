@@ -671,7 +671,6 @@ async function startAgent(
     try {
         character.id ??= stringToUuid(character.name);
         character.username ??= character.name;
-        character.modelProvider = ModelProviderName.AKASH_CHAT_API;
         const token = getTokenForProvider(character.modelProvider, character);
         const dataDir = path.join(__dirname, "../data");
 
