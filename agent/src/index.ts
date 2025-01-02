@@ -610,6 +610,10 @@ export async function createAgent(
                 ? avalanchePlugin
                 : null,
             getSecret(character, "COSMOS_MNEMONIC") ? cosmosPlugin : null,
+            getSecret(character, "FUEL_WALLET_PRIVATE_KEY") ? fuelPlugin : null,
+            getSecret(character, "AVALANCHE_PRIVATE_KEY")
+                ? avalanchePlugin
+                : null,
         ].filter(Boolean),
         providers: [],
         actions: [],
