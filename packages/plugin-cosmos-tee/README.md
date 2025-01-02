@@ -8,12 +8,12 @@ This plugin includes several providers for handling different TEE-related operat
 
 ### DeriveKeyProvider
 
-The `DeriveKeyProvider` allows for secure key derivation within a TEE environment. It supports deriving keys for both Solana (Ed25519) and Ethereum (ECDSA) chains.
+The `DeriveKeyProvider` allows for secure key derivation within a TEE environment. It supports deriving keys for cosmos chain.
 
 #### Usage
 
 ```typescript
-import { DeriveKeyProvider } from "@elizaos/plugin-tee";
+import { DeriveKeyProvider } from "@elizaos/plugincosmos-tee";
 
 // Initialize the provider
 const provider = new DeriveKeyProvider();
@@ -31,26 +31,15 @@ try {
     console.error("Raw key derivation failed:", error);
 }
 
-// Derive a Solana keypair (Ed25519)
+// Derive a cosmos keypair (secp256k1)
 try {
-    const solanaKeypair = await provider.deriveEd25519Keypair(
+    const solanaKeypair = await provider.deriveSecp256k1KeypairForCosmos(
         "/path/to/derive",
         "subject-identifier"
     );
-    // solanaKeypair can now be used for Solana operations
+    // cosmosKeypair can now be used for cosmos operations
 } catch (error) {
     console.error("Solana key derivation failed:", error);
-}
-
-// Derive an Ethereum keypair (ECDSA)
-try {
-    const evmKeypair = await provider.deriveEcdsaKeypair(
-        "/path/to/derive",
-        "subject-identifier"
-    );
-    // evmKeypair can now be used for Ethereum operations
-} catch (error) {
-    console.error("EVM key derivation failed:", error);
 }
 ```
 
