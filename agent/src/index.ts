@@ -598,6 +598,10 @@ export async function createAgent(
             getSecret(character, "SUI_PRIVATE_KEY") ? suiPlugin : null,
             getSecret(character, "STORY_PRIVATE_KEY") ? storyPlugin : null,
             getSecret(character, "COSMOS_MNEMONIC") ? cosmosPlugin : null,
+            getSecret(character, "FUEL_WALLET_PRIVATE_KEY") ? fuelPlugin : null,
+            getSecret(character, "AVALANCHE_PRIVATE_KEY")
+                ? avalanchePlugin
+                : null,
         ].filter(Boolean),
         providers: [],
         actions: [],
@@ -667,6 +671,7 @@ async function startAgent(
     try {
         character.id ??= stringToUuid(character.name);
         character.username ??= character.name;
+        character.modelProvider = ModelProviderName.AKASH_CHAT_API;
         const token = getTokenForProvider(character.modelProvider, character);
         const dataDir = path.join(__dirname, "../data");
 
