@@ -30,7 +30,7 @@
         "editor.defaultFormatter": "vscode.json-language-features"
     },
     "[javascript]": {
-        "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+        "editor.defaultFormatter": "esbenp.prettier-vscode"
     },
     "[scss]": {
         "editor.defaultFormatter": "vscode.css-language-features"

@@ -1,18 +1,24 @@
 import { IAgentRuntime, Memory, Provider, State } from "@elizaos/core";
-import { Keypair } from "@solana/web3.js";
+
 import crypto from "crypto";
 import { DeriveKeyResponse, TappdClient } from "@phala/dstack-sdk";
-import { privateKeyToAccount } from "viem/accounts";
-import { PrivateKeyAccount, keccak256 } from "viem";
+
 import { RemoteAttestationProvider } from "./remoteAttestationProvider";
 import { TEEMode, RemoteAttestationQuote } from "../types/tee";
 import secp256k1 from "secp256k1";
+import { bech32 } from "bech32";
+import { Secp256k1 } from "@cosmjs/crypto";
 
 interface DeriveKeyAttestationData {
     agentId: string;
     publicKey: string;
 }
 
+async function convertUncompressedToCompressed(
+    uncompressedPubKey: Uint8Array
+): Promise<Uint8Array> {
+    return await Secp256k1.compressPubkey(uncompressedPubKey);
+}
 class DeriveKeyProvider {
     private client: TappdClient;
     private raProvider: RemoteAttestationProvider;
@@ -85,87 +91,18 @@ class DeriveKeyProvider {
             throw error;
         }
     }
-
-    async deriveEd25519Keypair(
-        path: string,
-        subject: string,
-        agentId: string
-    ): Promise<{ keypair: Keypair; attestation: RemoteAttestationQuote }> {
-        try {
-            if (!path || !subject) {
-                console.error(
-                    "Path and Subject are required for key derivation"
-                );
-            }
-
-            console.log("Deriving Key in TEE...");
-            const derivedKey = await this.client.deriveKey(path, subject);
-            const uint8ArrayDerivedKey = derivedKey.asUint8Array();
-
-            const hash = crypto.createHash("sha256");
-            hash.update(uint8ArrayDerivedKey);
-            const seed = hash.digest();
-            const seedArray = new Uint8Array(seed);
-            const keypair = Keypair.fromSeed(seedArray.slice(0, 32));
-
-            const attestation = await this.generateDeriveKeyAttestation(
-                agentId,
-                keypair.publicKey.toBase58()
-            );
-            console.log("Key Derived Successfully!");
-
-            return { keypair, attestation };
-        } catch (error) {
-            console.error("Error deriving key:", error);
-            throw error;
-        }
-    }
-
-    async deriveEcdsaKeypair(
-        path: string,
-        subject: string,
-        agentId: string
-    ): Promise<{
-        keypair: PrivateKeyAccount;
-        attestation: RemoteAttestationQuote;
-    }> {
-        try {
-            if (!path || !subject) {
-                console.error(
-                    "Path and Subject are required for key derivation"
-                );
-            }
-
-            console.log("Deriving ECDSA Key in TEE...");
-            const deriveKeyResponse: DeriveKeyResponse =
-                await this.client.deriveKey(path, subject);
-            const hex = keccak256(deriveKeyResponse.asUint8Array());
-            const keypair: PrivateKeyAccount = privateKeyToAccount(hex);
-
-            const attestation = await this.generateDeriveKeyAttestation(
-                agentId,
-                keypair.address
-            );
-            console.log("ECDSA Key Derived Successfully!");
-
-            return { keypair, attestation };
-        } catch (error) {
-            console.error("Error deriving ecdsa key:", error);
-            throw error;
-        }
-    }
-
-    async deriveSecp256k1Keypair(
+    async deriveSecp256k1KeypairForCosmos(
         path: string,
         subject: string,
         agentId: string
     ): Promise<{
         keypair: { privateKey: string; publicKey: string };
+        address: string; // Cosmos address
         attestation: RemoteAttestationQuote;
     }> {
         try {
             if (!path || !subject) {
-                console.error(
+                throw new Error(
                     "Path and Subject are required for key derivation"
                 );
             }
@@ -176,6 +113,27 @@ class DeriveKeyProvider {
 
             const privateKey = uint8ArrayDerivedKey.slice(0, 32);
             const publicKey = secp256k1.publicKeyCreate(privateKey, false);
+
+            const compressedPublicKey =
+                await convertUncompressedToCompressed(publicKey);
+
+            // Step 1: Apply SHA256 hash to the public key
+            const sha256 = crypto
+                .createHash("sha256")
+                .update(compressedPublicKey)
+                .digest();
+
+            // Step 2: Apply RIPEMD160 to the SHA256 hash
+            const ripemd160 = crypto
+                .createHash("ripemd160")
+                .update(sha256)
+                .digest();
+
+            // Step 3: Encode the result in Bech32
+            const cosmosAddress = bech32.encode(
+                "osmo", // change this to your specified prefix
+                bech32.toWords(ripemd160) // Use the 20-byte hash from RIPEMD160
+            );
 
             const attestation = await this.generateDeriveKeyAttestation(
                 agentId,
@@ -188,10 +146,11 @@ class DeriveKeyProvider {
                     privateKey: Buffer.from(privateKey).toString("hex"),
                     publicKey: Buffer.from(publicKey).toString("hex"),
                 },
+                address: cosmosAddress,
                 attestation,
             };
         } catch (error) {
-            console.error("Error deriving Secp256k1 key:", error);
+            console.error("Error deriving Secp256k1 key for Cosmos:", error);
             throw error;
         }
     }
@@ -213,34 +172,14 @@ const deriveKeyProvider: Provider = {
             try {
                 const secretSalt =
                     runtime.getSetting("WALLET_SECRET_SALT") || "secret_salt";
-                const solanaKeypair = await provider.deriveEd25519Keypair(
-                    "/",
-                    secretSalt,
-                    agentId
-                );
-                const evmKeypair = await provider.deriveEcdsaKeypair(
-                    "/",
-                    secretSalt,
-                    agentId
-                );
-                const cosmosKeypair = await provider.deriveSecp256k1Keypair(
-                    "/",
-                    secretSalt,
-                    agentId
-                );
-
-                console.log(
-                    ">>>>>>>>>>>>>>>>>>>>>>>>>.",
-                    cosmosKeypair.keypair.privateKey
-                );
-                console.log(
-                    ">>>>>>>>>>>>>>>>>>>>>>>>>.",
-                    solanaKeypair.keypair.publicKey
-                );
+                const cosmosKeypair =
+                    await provider.deriveSecp256k1KeypairForCosmos(
+                        "/",
+                        secretSalt,
+                        agentId
+                    );
                 return JSON.stringify({
-                    solana: solanaKeypair.keypair.publicKey,
-                    evm: evmKeypair.keypair.address,
-                    cosmos: cosmosKeypair.keypair.publicKey,
+                    cosmos: cosmosKeypair.address,
                 });
             } catch (error) {
                 console.error("Error creating PublicKey:", error);
