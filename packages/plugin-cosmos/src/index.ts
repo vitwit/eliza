@@ -1,7 +1,6 @@
 import { Plugin } from "@ai16z/eliza/src/types";
 import { walletProvider } from "./providers/wallet";
-import { executeTransfer } from "./actions/transfer";
-// If you want to implement swap, custom tokens, etc., create the files similarly and import them.
+import executeTransfer from "./actions/transfer";
 
 export const cosmosPlugin: Plugin = {
   name: "COSMOS",
